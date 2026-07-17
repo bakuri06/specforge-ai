@@ -68,6 +68,15 @@ best-effort brace-extraction parsing plus one corrective retry — re-prompting
 with the malformed output included — before giving up, since local models under
 `format: json` still occasionally wrap output in prose/fences).
 
+The httpx timeout for every Ollama call is `settings.ollama_timeout_seconds`
+(600s default, env `OLLAMA_TIMEOUT_SECONDS`) — a live run on modest hardware
+hit the old hardcoded 180s ceiling on a 14B model with a large prompt. If this
+resurfaces, raise the setting rather than re-hardcoding a number; hardware
+speed varies a lot across contributors' machines. `main.py` registers
+exception handlers for `httpx.TimeoutException` (504) and `httpx.ConnectError`
+(502) so these surface as a readable `detail` message to the frontend instead
+of a bare "Internal Server Error".
+
 Routing/loop correctness (`route_ambiguity`, `route_gaps`, the interrupt/resume
 cycle, legacy-test-case forwarding) is covered by
 `backend/tests/test_graph.py`, which monkeypatches `nodes.ollama_chat` — no live

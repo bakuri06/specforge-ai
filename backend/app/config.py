@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     ollama_base_url: str = "http://localhost:11434"
+    ollama_timeout_seconds: float = 600.0
     vision_model: str = "qwen2.5vl:7b"
     reasoning_model: str = "deepseek-r1:14b"
     formatter_model: str = "qwen2.5-coder:14b"

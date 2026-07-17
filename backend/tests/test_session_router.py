@@ -1,6 +1,7 @@
 import io
 from types import SimpleNamespace
 
+import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -73,6 +74,38 @@ def test_pasted_and_uploaded_legacy_cases_are_both_captured(monkeypatch):
     legacy = fake_graph.state["legacy_test_cases"]
     assert "Pasted legacy case" in legacy
     assert "Uploaded case" in legacy
+
+
+def test_ollama_timeout_returns_helpful_504_not_bare_500(monkeypatch):
+    class _TimeoutGraph(_FakeGraph):
+        async def ainvoke(self, payload, config):
+            raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(session_module, "graph", _TimeoutGraph())
+
+    response = client.post(
+        "/api/sessions/",
+        data={"text": "Some requirements"},
+    )
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"] or "too long" in response.json()["detail"]
+
+
+def test_ollama_unreachable_returns_helpful_502_not_bare_500(monkeypatch):
+    class _UnreachableGraph(_FakeGraph):
+        async def ainvoke(self, payload, config):
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(session_module, "graph", _UnreachableGraph())
+
+    response = client.post(
+        "/api/sessions/",
+        data={"text": "Some requirements"},
+    )
+
+    assert response.status_code == 502
+    assert "Ollama" in response.json()["detail"]
 
 
 def test_ambiguity_round_increments_with_qa_history_and_questions_change(monkeypatch):

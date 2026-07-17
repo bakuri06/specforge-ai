@@ -70,7 +70,9 @@ async def _raw_chat(
         len(prompt),
     )
     started = time.monotonic()
-    async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=180.0) as client:
+    async with httpx.AsyncClient(
+        base_url=settings.ollama_base_url, timeout=settings.ollama_timeout_seconds
+    ) as client:
         response = await client.post("/api/chat", json=payload)
         response.raise_for_status()
         content = response.json()["message"]["content"]
