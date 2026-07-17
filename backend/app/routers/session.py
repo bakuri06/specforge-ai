@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 
@@ -12,6 +13,8 @@ from app.models.schemas import (
     SessionStateResponse,
 )
 from app.services.file_parser import extract_text_from_csv, extract_text_from_pdf
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -78,6 +81,13 @@ async def start_session(
     legacy_files: list[UploadFile] = File(default=[]),
 ):
     session_id = str(uuid.uuid4())
+    logger.info(
+        "[%s] POST /api/sessions/: text_chars=%d files=%d legacy_files=%d",
+        session_id,
+        len(text),
+        len(files),
+        len(legacy_files),
+    )
     text_parts = [text] if text else []
     legacy_parts = [legacy_test_cases] if legacy_test_cases else []
     image_paths: list[str] = []
@@ -110,8 +120,11 @@ async def start_session(
         "gap_qa_history": [],
     }
 
+    logger.info("[%s] running graph (this can take a while)...", session_id)
     await graph.ainvoke(initial_state, config=_config(session_id))
-    return await _to_response(session_id)
+    response = await _to_response(session_id)
+    logger.info("[%s] start_session: awaiting_input=%s", session_id, response.awaiting_input)
+    return response
 
 
 @router.get("/{session_id}", response_model=SessionStateResponse)
@@ -121,28 +134,53 @@ async def get_session(session_id: str):
 
 @router.post("/{session_id}/clarify-requirements", response_model=SessionStateResponse)
 async def clarify_requirements(session_id: str, payload: ClarificationAnswers):
+    logger.info(
+        "[%s] POST clarify-requirements: %d answer(s), resuming graph...",
+        session_id,
+        len(payload.answers),
+    )
     await graph.ainvoke(Command(resume=payload.answers), config=_config(session_id))
-    return await _to_response(session_id)
+    response = await _to_response(session_id)
+    logger.info(
+        "[%s] clarify_requirements: awaiting_input=%s", session_id, response.awaiting_input
+    )
+    return response
 
 
 @router.post("/{session_id}/clarify-gaps", response_model=SessionStateResponse)
 async def clarify_gaps(session_id: str, payload: ClarificationAnswers):
+    logger.info(
+        "[%s] POST clarify-gaps: %d answer(s), resuming graph...",
+        session_id,
+        len(payload.answers),
+    )
     await graph.ainvoke(Command(resume=payload.answers), config=_config(session_id))
-    return await _to_response(session_id)
+    response = await _to_response(session_id)
+    logger.info("[%s] clarify_gaps: awaiting_input=%s", session_id, response.awaiting_input)
+    return response
 
 
 @router.post("/{session_id}/checklist-signoff", response_model=SessionStateResponse)
 async def checklist_signoff(session_id: str, payload: ChecklistSignoff):
+    logger.info(
+        "[%s] POST checklist-signoff: %d scenario(s), format=%s, resuming graph...",
+        session_id,
+        len(payload.test_matrix),
+        payload.output_format,
+    )
     resume_value = {
         "test_matrix": [item.model_dump() for item in payload.test_matrix],
         "output_format": payload.output_format,
     }
     await graph.ainvoke(Command(resume=resume_value), config=_config(session_id))
-    return await _to_response(session_id)
+    response = await _to_response(session_id)
+    logger.info("[%s] checklist_signoff: formatting complete", session_id)
+    return response
 
 
 @router.get("/{session_id}/download")
 async def download(session_id: str):
+    logger.info("[%s] GET download", session_id)
     snapshot = await graph.aget_state(_config(session_id))
     output = snapshot.values.get("formatted_output")
     if not output:

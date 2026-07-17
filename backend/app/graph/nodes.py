@@ -1,17 +1,24 @@
+import logging
+
 from langgraph.types import interrupt
 
 from app.config import settings
 from app.graph.llm import ollama_chat
 from app.graph.state import SpecForgeState
 
+logger = logging.getLogger(__name__)
+
 # --- Phase 1: Visual Context Engine -----------------------------------------
 
 
 async def ingest_visual_node(state: SpecForgeState) -> dict:
+    session_id = state.get("session_id", "?")
     image_paths = state.get("image_paths") or []
     if not image_paths:
+        logger.info("[%s] ingest_visual: no images attached, skipping", session_id)
         return {"visual_context": "", "stage": "ingest_visual"}
 
+    logger.info("[%s] ingest_visual: analyzing %d image(s)", session_id, len(image_paths))
     contexts = []
     for path in image_paths:
         content = await ollama_chat(
@@ -22,6 +29,7 @@ async def ingest_visual_node(state: SpecForgeState) -> dict:
             images=[path],
         )
         contexts.append(content)
+    logger.info("[%s] ingest_visual: done", session_id)
     return {"visual_context": "\n\n---\n\n".join(contexts), "stage": "ingest_visual"}
 
 
@@ -57,6 +65,10 @@ def _format_qa_history(history: list[dict]) -> str:
 
 
 async def ba_refiner_node(state: SpecForgeState) -> dict:
+    session_id = state.get("session_id", "?")
+    pass_number = len(state.get("qa_history", [])) + 1
+    logger.info("[%s] ba_refiner: starting (pass %d)", session_id, pass_number)
+
     prompt = (
         f"{BA_REFINER_SYSTEM}\n\n"
         f"# Requirements\n{state.get('requirements_draft', '')}\n\n"
@@ -66,22 +78,41 @@ async def ba_refiner_node(state: SpecForgeState) -> dict:
     result = await ollama_chat(settings.reasoning_model, prompt, expect_json=True)
 
     if result.get("ambiguous"):
+        questions = result.get("questions", [])[:3]
+        logger.info(
+            "[%s] ba_refiner: ambiguous, %d clarifying question(s)",
+            session_id,
+            len(questions),
+        )
         return {
-            "ambiguity_questions": result.get("questions", [])[:3],
+            "ambiguity_questions": questions,
             "ambiguity_resolved": False,
             "stage": "ba_refiner",
         }
+    polished_spec = result.get("polished_spec", "")
+    logger.info(
+        "[%s] ba_refiner: resolved, polished spec ready (%d chars)",
+        session_id,
+        len(polished_spec),
+    )
     return {
-        "polished_spec": result.get("polished_spec", ""),
+        "polished_spec": polished_spec,
         "ambiguity_resolved": True,
         "stage": "ba_refiner",
     }
 
 
 def ba_clarification_node(state: SpecForgeState) -> dict:
+    session_id = state.get("session_id", "?")
+    logger.info(
+        "[%s] ba_clarification: paused, awaiting answers to %d question(s)",
+        session_id,
+        len(state["ambiguity_questions"]),
+    )
     answers = interrupt(
         {"type": "ba_clarification", "questions": state["ambiguity_questions"]}
     )
+    logger.info("[%s] ba_clarification: resumed with answers", session_id)
     history = state.get("qa_history", []) + [
         {"questions": state["ambiguity_questions"], "answers": answers}
     ]
@@ -119,6 +150,10 @@ Respond with ONLY a JSON object, no prose, matching this shape:
 
 
 async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
+    session_id = state.get("session_id", "?")
+    pass_number = len(state.get("gap_qa_history", [])) + 1
+    logger.info("[%s] qa_matrix_builder: starting (pass %d)", session_id, pass_number)
+
     prompt = (
         f"{QA_MATRIX_SYSTEM}\n\n"
         f"# Polished requirements\n{state.get('polished_spec', '')}\n\n"
@@ -128,22 +163,41 @@ async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
     result = await ollama_chat(settings.reasoning_model, prompt, expect_json=True)
 
     if result.get("gaps_found"):
+        questions = result.get("questions", [])[:3]
+        logger.info(
+            "[%s] qa_matrix_builder: gaps found, %d clarifying question(s)",
+            session_id,
+            len(questions),
+        )
         return {
-            "gap_questions": result.get("questions", [])[:3],
+            "gap_questions": questions,
             "gaps_resolved": False,
             "stage": "qa_matrix_builder",
         }
+    test_matrix = result.get("test_matrix", [])
+    logger.info(
+        "[%s] qa_matrix_builder: resolved, %d test scenario(s) generated",
+        session_id,
+        len(test_matrix),
+    )
     return {
-        "test_matrix": result.get("test_matrix", []),
+        "test_matrix": test_matrix,
         "gaps_resolved": True,
         "stage": "qa_matrix_builder",
     }
 
 
 def gap_clarification_node(state: SpecForgeState) -> dict:
+    session_id = state.get("session_id", "?")
+    logger.info(
+        "[%s] gap_clarification: paused, awaiting answers to %d question(s)",
+        session_id,
+        len(state["gap_questions"]),
+    )
     answers = interrupt(
         {"type": "gap_clarification", "questions": state["gap_questions"]}
     )
+    logger.info("[%s] gap_clarification: resumed with answers", session_id)
     history = state.get("gap_qa_history", []) + [
         {"questions": state["gap_questions"], "answers": answers}
     ]
@@ -158,8 +212,20 @@ def route_gaps(state: SpecForgeState) -> str:
 
 
 def checklist_signoff_node(state: SpecForgeState) -> dict:
+    session_id = state.get("session_id", "?")
+    logger.info(
+        "[%s] checklist_signoff: paused, awaiting sign-off on %d scenario(s)",
+        session_id,
+        len(state.get("test_matrix", [])),
+    )
     decision = interrupt(
         {"type": "checklist_signoff", "test_matrix": state.get("test_matrix", [])}
+    )
+    logger.info(
+        "[%s] checklist_signoff: resumed, %d scenario(s) signed off for format=%s",
+        session_id,
+        len(decision["test_matrix"]),
+        decision["output_format"],
     )
     return {
         "test_matrix": decision["test_matrix"],
@@ -194,8 +260,12 @@ FORMATTER_PROMPTS = {
 
 
 async def formatter_node(state: SpecForgeState) -> dict:
+    session_id = state.get("session_id", "?")
     fmt = state.get("output_format", "testrail")
+    logger.info("[%s] formatter: compiling output as %s", session_id, fmt)
+
     instructions = FORMATTER_PROMPTS.get(fmt, FORMATTER_PROMPTS["testrail"])
     prompt = f"{instructions}\n\n# Test matrix (JSON)\n{state.get('test_matrix', [])}"
     output = await ollama_chat(settings.formatter_model, prompt)
+    logger.info("[%s] formatter: done (%d chars)", session_id, len(output))
     return {"formatted_output": output, "stage": "formatter"}

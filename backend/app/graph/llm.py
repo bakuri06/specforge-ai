@@ -1,10 +1,14 @@
 import base64
 import json
+import logging
+import time
 from typing import Optional, Union
 
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 async def ollama_chat(
@@ -26,6 +30,9 @@ async def ollama_chat(
     try:
         return _parse_json_with_repair(content)
     except json.JSONDecodeError:
+        logger.warning(
+            "ollama_chat: model=%s returned invalid JSON, retrying once", model
+        )
         corrected_prompt = (
             f"{prompt}\n\n"
             "Your previous response was not valid JSON:\n"
@@ -55,10 +62,26 @@ async def _raw_chat(
     if expect_json:
         payload["format"] = "json"
 
+    logger.info(
+        "ollama_chat: calling model=%s images=%d prompt_chars=%d (this can take a "
+        "while on CPU/limited RAM)",
+        model,
+        len(images or []),
+        len(prompt),
+    )
+    started = time.monotonic()
     async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=180.0) as client:
         response = await client.post("/api/chat", json=payload)
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        content = response.json()["message"]["content"]
+    elapsed = time.monotonic() - started
+    logger.info(
+        "ollama_chat: model=%s responded in %.1fs (%d chars)",
+        model,
+        elapsed,
+        len(content),
+    )
+    return content
 
 
 def _encode_image(path: str) -> str:
