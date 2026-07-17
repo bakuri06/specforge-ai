@@ -52,35 +52,51 @@ async def _to_response(session_id: str) -> SessionStateResponse:
     )
 
 
+async def _save_upload(upload: UploadFile, upload_dir: str) -> str:
+    dest = os.path.join(upload_dir, upload.filename)
+    content = await upload.read()
+    with open(dest, "wb") as out:
+        out.write(content)
+    return dest
+
+
+def _extract_text(dest: str, filename: str, content_type: str) -> str:
+    lower_name = filename.lower()
+    if content_type == "application/pdf" or lower_name.endswith(".pdf"):
+        return extract_text_from_pdf(dest)
+    if content_type == "text/csv" or lower_name.endswith(".csv"):
+        return extract_text_from_csv(dest)
+    with open(dest, "rb") as f:
+        return f.read().decode("utf-8", errors="ignore")
+
+
 @router.post("/", response_model=SessionStateResponse)
 async def start_session(
     text: str = Form(""),
     legacy_test_cases: str = Form(""),
     files: list[UploadFile] = File(default=[]),
+    legacy_files: list[UploadFile] = File(default=[]),
 ):
     session_id = str(uuid.uuid4())
     text_parts = [text] if text else []
+    legacy_parts = [legacy_test_cases] if legacy_test_cases else []
     image_paths: list[str] = []
 
     upload_dir = os.path.join(settings.storage_dir, session_id)
     os.makedirs(upload_dir, exist_ok=True)
 
     for upload in files:
-        dest = os.path.join(upload_dir, upload.filename)
-        content = await upload.read()
-        with open(dest, "wb") as out:
-            out.write(content)
-
-        lower_name = upload.filename.lower()
         content_type = upload.content_type or ""
-        if content_type == "application/pdf" or lower_name.endswith(".pdf"):
-            text_parts.append(extract_text_from_pdf(dest))
-        elif content_type == "text/csv" or lower_name.endswith(".csv"):
-            text_parts.append(extract_text_from_csv(dest))
-        elif content_type.startswith("image/"):
+        dest = await _save_upload(upload, upload_dir)
+        if content_type.startswith("image/"):
             image_paths.append(dest)
         else:
-            text_parts.append(content.decode("utf-8", errors="ignore"))
+            text_parts.append(_extract_text(dest, upload.filename, content_type))
+
+    for upload in legacy_files:
+        content_type = upload.content_type or ""
+        dest = await _save_upload(upload, upload_dir)
+        legacy_parts.append(_extract_text(dest, upload.filename, content_type))
 
     if not text_parts and not image_paths:
         raise HTTPException(400, "Provide at least some text or a file to analyze.")
@@ -89,7 +105,7 @@ async def start_session(
         "session_id": session_id,
         "requirements_draft": "\n\n".join(text_parts),
         "image_paths": image_paths,
-        "legacy_test_cases": legacy_test_cases,
+        "legacy_test_cases": "\n\n".join(legacy_parts),
         "qa_history": [],
         "gap_qa_history": [],
     }

@@ -4,10 +4,11 @@ export default function UploadStep({ onSubmit, submitting, error }) {
   const [text, setText] = useState('')
   const [legacyTestCases, setLegacyTestCases] = useState('')
   const [files, setFiles] = useState([])
+  const [legacyFiles, setLegacyFiles] = useState([])
 
   const handleSubmit = (event) => {
     event.preventDefault()
-    onSubmit({ text, legacyTestCases, files })
+    onSubmit({ text, legacyTestCases, files, legacyFiles })
   }
 
   return (
@@ -55,6 +56,21 @@ export default function UploadStep({ onSubmit, submitting, error }) {
           placeholder="Paste existing test cases to run delta analysis against..."
           className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
         />
+        <p className="mt-2 text-xs text-slate-500">Or upload a legacy CSV suite:</p>
+        <input
+          type="file"
+          multiple
+          accept=".csv,text/csv"
+          onChange={(event) => setLegacyFiles(Array.from(event.target.files))}
+          className="mt-1 block w-full text-sm text-slate-600"
+        />
+        {legacyFiles.length > 0 && (
+          <ul className="mt-2 text-xs text-slate-500 list-disc list-inside">
+            {legacyFiles.map((file) => (
+              <li key={file.name}>{file.name}</li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}

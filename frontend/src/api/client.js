@@ -8,11 +8,12 @@ async function handleResponse(response) {
   return response.json()
 }
 
-export async function startSession({ text, legacyTestCases, files }) {
+export async function startSession({ text, legacyTestCases, files, legacyFiles = [] }) {
   const formData = new FormData()
   formData.append('text', text)
   formData.append('legacy_test_cases', legacyTestCases)
   files.forEach((file) => formData.append('files', file))
+  legacyFiles.forEach((file) => formData.append('legacy_files', file))
 
   const response = await fetch(`${API_BASE_URL}/api/sessions/`, {
     method: 'POST',
