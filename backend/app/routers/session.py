@@ -1,0 +1,143 @@
+import os
+import uuid
+
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from langgraph.types import Command
+
+from app.config import settings
+from app.graph.build import graph
+from app.models.schemas import (
+    ChecklistSignoff,
+    ClarificationAnswers,
+    SessionStateResponse,
+)
+from app.services.file_parser import extract_text_from_csv, extract_text_from_pdf
+
+router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+_AWAITING_BY_NEXT_NODE = {
+    "ba_clarification": "ba_clarification",
+    "gap_clarification": "gap_clarification",
+    "checklist_signoff": "checklist_signoff",
+}
+
+
+def _config(session_id: str) -> dict:
+    return {"configurable": {"thread_id": session_id}}
+
+
+async def _to_response(session_id: str) -> SessionStateResponse:
+    snapshot = await graph.aget_state(_config(session_id))
+    values = snapshot.values
+    awaiting = None
+    for node_name in snapshot.next:
+        if node_name in _AWAITING_BY_NEXT_NODE:
+            awaiting = _AWAITING_BY_NEXT_NODE[node_name]
+            break
+
+    return SessionStateResponse(
+        session_id=session_id,
+        stage=values.get("stage", "start"),
+        awaiting_input=awaiting,
+        ambiguity_questions=values.get("ambiguity_questions", [])
+        if awaiting == "ba_clarification"
+        else [],
+        gap_questions=values.get("gap_questions", [])
+        if awaiting == "gap_clarification"
+        else [],
+        polished_spec=values.get("polished_spec"),
+        test_matrix=values.get("test_matrix", []),
+        output_format=values.get("output_format"),
+        formatted_output=values.get("formatted_output"),
+    )
+
+
+@router.post("/", response_model=SessionStateResponse)
+async def start_session(
+    text: str = Form(""),
+    legacy_test_cases: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
+):
+    session_id = str(uuid.uuid4())
+    text_parts = [text] if text else []
+    image_paths: list[str] = []
+
+    upload_dir = os.path.join(settings.storage_dir, session_id)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    for upload in files:
+        dest = os.path.join(upload_dir, upload.filename)
+        content = await upload.read()
+        with open(dest, "wb") as out:
+            out.write(content)
+
+        lower_name = upload.filename.lower()
+        content_type = upload.content_type or ""
+        if content_type == "application/pdf" or lower_name.endswith(".pdf"):
+            text_parts.append(extract_text_from_pdf(dest))
+        elif content_type == "text/csv" or lower_name.endswith(".csv"):
+            text_parts.append(extract_text_from_csv(dest))
+        elif content_type.startswith("image/"):
+            image_paths.append(dest)
+        else:
+            text_parts.append(content.decode("utf-8", errors="ignore"))
+
+    if not text_parts and not image_paths:
+        raise HTTPException(400, "Provide at least some text or a file to analyze.")
+
+    initial_state = {
+        "session_id": session_id,
+        "requirements_draft": "\n\n".join(text_parts),
+        "image_paths": image_paths,
+        "legacy_test_cases": legacy_test_cases,
+        "qa_history": [],
+        "gap_qa_history": [],
+    }
+
+    await graph.ainvoke(initial_state, config=_config(session_id))
+    return await _to_response(session_id)
+
+
+@router.get("/{session_id}", response_model=SessionStateResponse)
+async def get_session(session_id: str):
+    return await _to_response(session_id)
+
+
+@router.post("/{session_id}/clarify-requirements", response_model=SessionStateResponse)
+async def clarify_requirements(session_id: str, payload: ClarificationAnswers):
+    await graph.ainvoke(Command(resume=payload.answers), config=_config(session_id))
+    return await _to_response(session_id)
+
+
+@router.post("/{session_id}/clarify-gaps", response_model=SessionStateResponse)
+async def clarify_gaps(session_id: str, payload: ClarificationAnswers):
+    await graph.ainvoke(Command(resume=payload.answers), config=_config(session_id))
+    return await _to_response(session_id)
+
+
+@router.post("/{session_id}/checklist-signoff", response_model=SessionStateResponse)
+async def checklist_signoff(session_id: str, payload: ChecklistSignoff):
+    resume_value = {
+        "test_matrix": [item.model_dump() for item in payload.test_matrix],
+        "output_format": payload.output_format,
+    }
+    await graph.ainvoke(Command(resume=resume_value), config=_config(session_id))
+    return await _to_response(session_id)
+
+
+@router.get("/{session_id}/download")
+async def download(session_id: str):
+    snapshot = await graph.aget_state(_config(session_id))
+    output = snapshot.values.get("formatted_output")
+    if not output:
+        raise HTTPException(404, "No formatted output available yet for this session.")
+
+    fmt = snapshot.values.get("output_format", "testrail")
+    extension = {"testrail": "md", "qtest": "csv", "playwright": "ts"}.get(fmt, "txt")
+    return Response(
+        content=output,
+        media_type="text/plain",
+        headers={
+            "Content-Disposition": f"attachment; filename=specforge_export.{extension}"
+        },
+    )
