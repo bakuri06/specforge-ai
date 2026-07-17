@@ -19,7 +19,9 @@ class SessionStateResponse(BaseModel):
         Literal["ba_clarification", "gap_clarification", "checklist_signoff"]
     ] = None
     ambiguity_questions: list[str] = []
+    ambiguity_round: int = 1
     gap_questions: list[str] = []
+    gap_round: int = 1
     polished_spec: Optional[str] = None
     test_matrix: list[TestMatrixItem] = []
     output_format: Optional[Literal["testrail", "qtest", "playwright"]] = None

@@ -79,9 +79,11 @@ export default function App() {
 
           {stepKey === 'refine' && session && (
             <ClarificationStep
+              key={`ba-${session.ambiguity_round}-${session.ambiguity_questions.join('|')}`}
               title="A few things need clarifying"
               description="The BA Requirements Refiner flagged some ambiguity before it can produce a clean spec."
               questions={session.ambiguity_questions}
+              round={session.ambiguity_round}
               onSubmit={handleClarifyRequirements}
               submitting={busy}
             />
@@ -89,9 +91,11 @@ export default function App() {
 
           {stepKey === 'matrix' && session?.awaiting_input === 'gap_clarification' && (
             <ClarificationStep
+              key={`gap-${session.gap_round}-${session.gap_questions.join('|')}`}
               title="Test coverage gaps found"
               description="The QA Test Matrix Builder needs a bit more detail before finalizing coverage."
               questions={session.gap_questions}
+              round={session.gap_round}
               onSubmit={handleClarifyGaps}
               submitting={busy}
             />

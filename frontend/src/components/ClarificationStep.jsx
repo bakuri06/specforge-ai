@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-export default function ClarificationStep({ title, description, questions, onSubmit, submitting }) {
+export default function ClarificationStep({ title, description, questions, round, onSubmit, submitting }) {
   const [answers, setAnswers] = useState(questions.map(() => ''))
 
   const handleChange = (index, value) => {
@@ -19,7 +19,14 @@ export default function ClarificationStep({ title, description, questions, onSub
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+        <h2 className="text-lg font-semibold text-slate-900">
+          {title}
+          {round > 1 && (
+            <span className="ml-2 text-sm font-normal text-slate-400">
+              (round {round})
+            </span>
+          )}
+        </h2>
         <p className="text-sm text-slate-500 mt-1">{description}</p>
       </div>
 

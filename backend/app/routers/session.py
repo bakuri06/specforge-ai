@@ -45,9 +45,11 @@ async def _to_response(session_id: str) -> SessionStateResponse:
         ambiguity_questions=values.get("ambiguity_questions", [])
         if awaiting == "ba_clarification"
         else [],
+        ambiguity_round=len(values.get("qa_history", [])) + 1,
         gap_questions=values.get("gap_questions", [])
         if awaiting == "gap_clarification"
         else [],
+        gap_round=len(values.get("gap_qa_history", [])) + 1,
         polished_spec=values.get("polished_spec"),
         test_matrix=values.get("test_matrix", []),
         output_format=values.get("output_format"),
