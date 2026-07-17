@@ -86,13 +86,24 @@ answered.
 
 There are three pause points, each implemented with `langgraph.types.interrupt()`
 inside a dedicated node: `ba_clarification_node`, `gap_clarification_node`, and
-`checklist_signoff_node`. These three are deliberately `async def`, even though
-none of them `await` anything — a plain `def` node gets dispatched through
-`langchain_core`'s thread-pool executor to avoid blocking the event loop, and on
-at least one observed `langchain-core`/`langgraph` version combination that
-thread hop drops the contextvar `interrupt()` needs, raising `RuntimeError:
-Called get_config outside of a runnable context`. Keep any future
-interrupt-calling node `async def` to avoid reintroducing this.
+`checklist_signoff_node`. These three are `async def` (even though none of them
+`await` anything), which was a first guess at fixing a real crash — it turned
+out not to be the actual cause, but there's no harm in leaving them async.
+
+**The real cause, and why `requirements.txt` pins exact versions**: with a
+loose `langgraph>=0.2.60,<0.3` range, `pip install` resolved a
+`langgraph`/`langchain-core`/`langgraph-checkpoint` combination on one
+teammate's machine where `interrupt()`'s internal `get_config()` call raised
+`RuntimeError: Called get_config outside of a runnable context` — even when
+the node was awaited directly via the correct async path (`await
+self.afunc(...)`, no thread executor involved). The identical code worked
+under `langgraph==0.2.76` / `langchain-core==0.3.86` /
+`langgraph-checkpoint==2.1.2`. `requirements.txt` now pins these four
+LangGraph-ecosystem packages exactly instead of as a range, since this is a
+cross-package compatibility issue, not something a single-package version
+bump can safely paper over. If this resurfaces, the fix is to find another
+mutually-compatible set of exact versions and pin those — not to widen the
+range back out.
 
 The graph is compiled with a `MemorySaver` checkpointer (process-local, not
 persisted across restarts), keyed by `thread_id == session_id`. Resuming a
