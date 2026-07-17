@@ -40,33 +40,58 @@ async def ingest_visual_node(state: SpecForgeState) -> dict:
 
 # --- Phase 2: Agent 1 - BA Requirements Refiner ------------------------------
 
-BA_REFINER_SYSTEM = """You are a senior Business Analyst. Given raw requirements text
-(optionally with a visual UI element map appended) and any prior clarification Q&A,
-evaluate whether the requirements are complete enough to design test cases against.
+BA_REFINER_SPEC_SECTIONS = """Use exactly these top-level sections, in this order
+(omit a section only if there is truly nothing to put in it):
+
+## Overview
+## User Flow
+## Business Rules
+## Error Handling & Edge Cases
+## Data Retention & Validation
+## Out of Scope"""
+
+BA_REFINER_SYSTEM = f"""You are a senior Business Analyst turning raw input into a
+technical requirements blueprint precise enough to write test cases directly
+against. Given raw requirements text (optionally with a visual UI element map
+appended) and any prior clarification Q&A, evaluate whether the requirements are
+complete enough to design test cases against.
 
 Check specifically for: missing error boundaries, undefined network timeout behavior,
 missing data retention/validation rules, and undefined edge-case business rules.
 
 Respond with ONLY a JSON object, no prose, matching this shape:
-{"ambiguous": true|false, "questions": ["...", "..."], "polished_spec": "..."}
+{{"ambiguous": true|false, "questions": ["...", "..."], "polished_spec": "..."}}
 
 - If ambiguous is true: include exactly 2-3 targeted clarifying questions in
   "questions" and leave "polished_spec" empty.
-- If ambiguous is false: leave "questions" empty and put the full, refined technical
-  requirements blueprint in "polished_spec" as clean markdown.
+- If ambiguous is false: leave "questions" empty and write the full requirements
+  blueprint in "polished_spec" as structured markdown. It must MERGE the original
+  requirements with every answer from the clarification Q&A below — fold each
+  answer into the section it belongs to as a concrete requirement, do not just
+  append the raw Q&A at the end. Preserve every specific detail from the original
+  input (numbers, thresholds, field names, business rules) — do not drop or
+  generalize them away. Be thorough: several sentences of concrete behavior per
+  section, not a one-line restatement of the section title.
+
+{BA_REFINER_SPEC_SECTIONS}
 """
 
-BA_REFINER_FORCE_RESOLVE_SYSTEM = """You are a senior Business Analyst. You have
+BA_REFINER_FORCE_RESOLVE_SYSTEM = f"""You are a senior Business Analyst. You have
 already used up the maximum number of clarification rounds allowed. You must now
-produce a final polished requirements blueprint using the information gathered so
-far, even if some ambiguity remains.
+produce a final requirements blueprint using the information gathered so far, even
+if some ambiguity remains.
 
-For anything still unresolved, make a reasonable, clearly-labeled assumption and
-list it under an "## Assumptions" section at the end of the spec, instead of
-asking another question.
+Merge the original requirements with every answer from the clarification Q&A below
+into the sections below, preserving every specific detail from the original input.
+For anything still unresolved, make a reasonable assumption within the relevant
+section instead of asking another question, and also list it under
+"## Assumptions" at the end.
 
 Respond with ONLY a JSON object, no prose, matching this shape:
-{"ambiguous": false, "questions": [], "polished_spec": "..."}
+{{"ambiguous": false, "questions": [], "polished_spec": "..."}}
+
+{BA_REFINER_SPEC_SECTIONS}
+## Assumptions
 """
 
 
@@ -84,10 +109,10 @@ def _format_qa_history(history: list[dict]) -> str:
 
 def _fallback_spec(state: SpecForgeState) -> str:
     """Last-resort spec if a forced-resolve call still comes back empty."""
-    parts = [state.get("requirements_draft", "")]
+    parts = ["## Overview\n" + state.get("requirements_draft", "")]
     history = state.get("qa_history", [])
     if history:
-        parts.append("## Clarifications gathered\n" + _format_qa_history(history))
+        parts.append("## Assumptions / Clarifications Gathered\n" + _format_qa_history(history))
     return "\n\n".join(parts)
 
 
