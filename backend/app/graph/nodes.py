@@ -8,6 +8,11 @@ from app.graph.state import SpecForgeState
 
 logger = logging.getLogger(__name__)
 
+# Cap on how many rounds of clarifying questions either agent can ask before
+# being forced to proceed with best-effort assumptions instead of looping
+# forever if the model keeps finding new ambiguity.
+MAX_CLARIFICATION_ROUNDS = 3
+
 # --- Phase 1: Visual Context Engine -----------------------------------------
 
 
@@ -51,6 +56,19 @@ Respond with ONLY a JSON object, no prose, matching this shape:
   requirements blueprint in "polished_spec" as clean markdown.
 """
 
+BA_REFINER_FORCE_RESOLVE_SYSTEM = """You are a senior Business Analyst. You have
+already used up the maximum number of clarification rounds allowed. You must now
+produce a final polished requirements blueprint using the information gathered so
+far, even if some ambiguity remains.
+
+For anything still unresolved, make a reasonable, clearly-labeled assumption and
+list it under an "## Assumptions" section at the end of the spec, instead of
+asking another question.
+
+Respond with ONLY a JSON object, no prose, matching this shape:
+{"ambiguous": false, "questions": [], "polished_spec": "..."}
+"""
+
 
 def _format_qa_history(history: list[dict]) -> str:
     if not history:
@@ -64,18 +82,48 @@ def _format_qa_history(history: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
+def _fallback_spec(state: SpecForgeState) -> str:
+    """Last-resort spec if a forced-resolve call still comes back empty."""
+    parts = [state.get("requirements_draft", "")]
+    history = state.get("qa_history", [])
+    if history:
+        parts.append("## Clarifications gathered\n" + _format_qa_history(history))
+    return "\n\n".join(parts)
+
+
 async def ba_refiner_node(state: SpecForgeState) -> dict:
     session_id = state.get("session_id", "?")
-    pass_number = len(state.get("qa_history", [])) + 1
-    logger.info("[%s] ba_refiner: starting (pass %d)", session_id, pass_number)
+    rounds_used = len(state.get("qa_history", []))
+    pass_number = rounds_used + 1
+    force_resolve = rounds_used >= MAX_CLARIFICATION_ROUNDS
+    logger.info(
+        "[%s] ba_refiner: starting (pass %d)%s",
+        session_id,
+        pass_number,
+        " [max rounds reached, forcing resolution]" if force_resolve else "",
+    )
 
+    system_prompt = BA_REFINER_FORCE_RESOLVE_SYSTEM if force_resolve else BA_REFINER_SYSTEM
     prompt = (
-        f"{BA_REFINER_SYSTEM}\n\n"
+        f"{system_prompt}\n\n"
         f"# Requirements\n{state.get('requirements_draft', '')}\n\n"
         f"# Visual context\n{state.get('visual_context') or '(none)'}\n\n"
         f"# Prior clarifications\n{_format_qa_history(state.get('qa_history', []))}"
     )
     result = await ollama_chat(settings.reasoning_model, prompt, expect_json=True)
+
+    if force_resolve:
+        polished_spec = result.get("polished_spec") or _fallback_spec(state)
+        logger.info(
+            "[%s] ba_refiner: forced resolution, polished spec ready (%d chars)",
+            session_id,
+            len(polished_spec),
+        )
+        return {
+            "polished_spec": polished_spec,
+            "ambiguity_resolved": True,
+            "stage": "ba_refiner",
+        }
 
     if result.get("ambiguous"):
         questions = result.get("questions", [])[:3]
@@ -148,19 +196,60 @@ Respond with ONLY a JSON object, no prose, matching this shape:
   grouped logically across Sunny Day, Rainy Day, Boundaries, and Edge Cases.
 """
 
+QA_MATRIX_FORCE_RESOLVE_SYSTEM = """You are a senior QA Engineer. You have already
+used up the maximum number of clarification rounds allowed for coverage gaps. You
+must now produce the final test strategy matrix using the information gathered so
+far, even if some coverage questions remain unresolved — make reasonable
+assumptions for anything still unclear instead of asking again.
+
+Respond with ONLY a JSON object, no prose, matching this shape:
+{
+  "gaps_found": false,
+  "questions": [],
+  "test_matrix": [
+    {"id": "TC-1", "category": "sunny_day|rainy_day|boundary|edge_case",
+     "title": "...", "description": "...",
+     "status": "new|modified|broken|unchanged", "included": true}
+  ]
+}
+"""
+
 
 async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
     session_id = state.get("session_id", "?")
-    pass_number = len(state.get("gap_qa_history", [])) + 1
-    logger.info("[%s] qa_matrix_builder: starting (pass %d)", session_id, pass_number)
+    rounds_used = len(state.get("gap_qa_history", []))
+    pass_number = rounds_used + 1
+    force_resolve = rounds_used >= MAX_CLARIFICATION_ROUNDS
+    logger.info(
+        "[%s] qa_matrix_builder: starting (pass %d)%s",
+        session_id,
+        pass_number,
+        " [max rounds reached, forcing resolution]" if force_resolve else "",
+    )
 
+    system_prompt = (
+        QA_MATRIX_FORCE_RESOLVE_SYSTEM if force_resolve else QA_MATRIX_SYSTEM
+    )
     prompt = (
-        f"{QA_MATRIX_SYSTEM}\n\n"
+        f"{system_prompt}\n\n"
         f"# Polished requirements\n{state.get('polished_spec', '')}\n\n"
         f"# Legacy test cases\n{state.get('legacy_test_cases') or '(none provided)'}\n\n"
         f"# Prior clarifications\n{_format_qa_history(state.get('gap_qa_history', []))}"
     )
     result = await ollama_chat(settings.reasoning_model, prompt, expect_json=True)
+
+    if force_resolve:
+        test_matrix = result.get("test_matrix", [])
+        logger.info(
+            "[%s] qa_matrix_builder: forced resolution, %d test scenario(s) generated",
+            session_id,
+            len(test_matrix),
+        )
+        return {
+            "test_matrix": test_matrix,
+            "gaps_resolved": True,
+            "stage": "qa_matrix_builder",
+        }
 
     if result.get("gaps_found"):
         questions = result.get("questions", [])[:3]

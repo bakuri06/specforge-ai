@@ -82,6 +82,19 @@ Graph flow: `ingest_visual -> ba_refiner -> (conditional) -> qa_matrix_builder -
 unresolved ambiguity/gaps, re-entering `ba_refiner`/`qa_matrix_builder` once
 answered.
 
+Both loops are capped at `MAX_CLARIFICATION_ROUNDS` (3, in `nodes.py`) — a live
+run hit round 3 with DeepSeek-R1 still finding new ambiguity each pass, with no
+way for the user to force progress. Once `len(qa_history)` /
+`len(gap_qa_history)` reaches the cap, `ba_refiner_node`/`qa_matrix_builder_node`
+switch to a "force resolve" system prompt (`BA_REFINER_FORCE_RESOLVE_SYSTEM` /
+`QA_MATRIX_FORCE_RESOLVE_SYSTEM`) instructing the model to proceed with
+reasonable, explicitly-labeled assumptions instead of asking again, and the
+node treats the result as resolved regardless of what the model reports back
+(`result.get("ambiguous")`/`result.get("gaps_found")` is ignored once
+`force_resolve` is true). If the model still returns an empty `polished_spec`
+on the forced call, `_fallback_spec()` synthesizes one from the raw
+requirements + gathered Q&A rather than leaving `polished_spec` empty.
+
 ### Human-in-the-loop via LangGraph interrupts
 
 There are three pause points, each implemented with `langgraph.types.interrupt()`

@@ -162,6 +162,86 @@ async def test_straight_through_when_spec_and_matrix_are_clean(monkeypatch):
     assert snapshot.values["formatted_output"] == "FORMATTED"
 
 
+async def test_ba_refiner_forces_resolution_after_max_rounds(monkeypatch):
+    """If the model keeps finding new ambiguity forever, the app must not get
+    stuck in an infinite clarification loop — it must force a resolution once
+    MAX_CLARIFICATION_ROUNDS rounds have been used, regardless of what the
+    model itself reports."""
+    ba_calls = {"count": 0}
+    seen_prompts = []
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "senior Business Analyst" in prompt:
+            ba_calls["count"] += 1
+            seen_prompts.append(prompt)
+            return {
+                "ambiguous": True,
+                "questions": [f"Question round {ba_calls['count']}"],
+                "polished_spec": "",
+            }
+        if "senior QA Engineer" in prompt:
+            return {"gaps_found": False, "questions": [], "test_matrix": []}
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-ba-cap"
+    config = _config(session_id)
+
+    await graph.ainvoke(_initial_state(session_id, "Vague requirements."), config=config)
+
+    for _ in range(nodes_module.MAX_CLARIFICATION_ROUNDS):
+        snapshot = await graph.aget_state(config)
+        assert snapshot.next == ("ba_clarification",)
+        await graph.ainvoke(Command(resume=["some answer"]), config=config)
+
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("checklist_signoff",)
+    assert snapshot.values["ambiguity_resolved"] is True
+    assert ba_calls["count"] == nodes_module.MAX_CLARIFICATION_ROUNDS + 1
+    assert "maximum number of clarification rounds" in seen_prompts[-1]
+    # The mock never provides a polished_spec even when forced, so the
+    # fallback synthesis (raw requirements + gathered Q&A) must kick in.
+    assert "Vague requirements." in snapshot.values["polished_spec"]
+
+
+async def test_qa_matrix_builder_forces_resolution_after_max_rounds(monkeypatch):
+    """Same safety net as the BA loop, for Agent 2's gap-clarification loop."""
+    qa_calls = {"count": 0}
+    seen_prompts = []
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "senior Business Analyst" in prompt:
+            return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
+        if "senior QA Engineer" in prompt:
+            qa_calls["count"] += 1
+            seen_prompts.append(prompt)
+            return {
+                "gaps_found": True,
+                "questions": [f"Gap question round {qa_calls['count']}"],
+                "test_matrix": [],
+            }
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-qa-cap"
+    config = _config(session_id)
+
+    await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+
+    for _ in range(nodes_module.MAX_CLARIFICATION_ROUNDS):
+        snapshot = await graph.aget_state(config)
+        assert snapshot.next == ("gap_clarification",)
+        await graph.ainvoke(Command(resume=["some answer"]), config=config)
+
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("checklist_signoff",)
+    assert snapshot.values["gaps_resolved"] is True
+    assert qa_calls["count"] == nodes_module.MAX_CLARIFICATION_ROUNDS + 1
+    assert "maximum number of clarification rounds" in seen_prompts[-1]
+
+
 async def test_legacy_test_cases_are_forwarded_into_qa_prompt(monkeypatch):
     """Regression guard: Agent 2 must actually see the legacy suite for delta analysis."""
     seen_prompts = []
