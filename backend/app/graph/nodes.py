@@ -102,7 +102,7 @@ async def ba_refiner_node(state: SpecForgeState) -> dict:
     }
 
 
-def ba_clarification_node(state: SpecForgeState) -> dict:
+async def ba_clarification_node(state: SpecForgeState) -> dict:
     session_id = state.get("session_id", "?")
     logger.info(
         "[%s] ba_clarification: paused, awaiting answers to %d question(s)",
@@ -187,7 +187,7 @@ async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
     }
 
 
-def gap_clarification_node(state: SpecForgeState) -> dict:
+async def gap_clarification_node(state: SpecForgeState) -> dict:
     session_id = state.get("session_id", "?")
     logger.info(
         "[%s] gap_clarification: paused, awaiting answers to %d question(s)",
@@ -211,7 +211,7 @@ def route_gaps(state: SpecForgeState) -> str:
 # --- Checklist intercept (human sign-off before formatting) ------------------
 
 
-def checklist_signoff_node(state: SpecForgeState) -> dict:
+async def checklist_signoff_node(state: SpecForgeState) -> dict:
     session_id = state.get("session_id", "?")
     logger.info(
         "[%s] checklist_signoff: paused, awaiting sign-off on %d scenario(s)",

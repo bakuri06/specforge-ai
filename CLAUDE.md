@@ -86,12 +86,20 @@ answered.
 
 There are three pause points, each implemented with `langgraph.types.interrupt()`
 inside a dedicated node: `ba_clarification_node`, `gap_clarification_node`, and
-`checklist_signoff_node`. The graph is compiled with a `MemorySaver` checkpointer
-(process-local, not persisted across restarts), keyed by `thread_id ==
-session_id`. Resuming a paused graph is done by invoking with
-`Command(resume=<value>)` against the same `thread_id` — see
-`backend/app/routers/session.py`. This means **a session only survives as long
-as the backend process stays up**; there's no durable session store yet.
+`checklist_signoff_node`. These three are deliberately `async def`, even though
+none of them `await` anything — a plain `def` node gets dispatched through
+`langchain_core`'s thread-pool executor to avoid blocking the event loop, and on
+at least one observed `langchain-core`/`langgraph` version combination that
+thread hop drops the contextvar `interrupt()` needs, raising `RuntimeError:
+Called get_config outside of a runnable context`. Keep any future
+interrupt-calling node `async def` to avoid reintroducing this.
+
+The graph is compiled with a `MemorySaver` checkpointer (process-local, not
+persisted across restarts), keyed by `thread_id == session_id`. Resuming a
+paused graph is done by invoking with `Command(resume=<value>)` against the
+same `thread_id` — see `backend/app/routers/session.py`. This means **a
+session only survives as long as the backend process stays up**; there's no
+durable session store yet.
 
 Because FastAPI is stateless across requests, `session.py`'s `_to_response()`
 helper reconstructs "what is the frontend waiting for" purely by calling
