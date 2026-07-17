@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # Cap on how many rounds of clarifying questions either agent can ask before
 # being forced to proceed with best-effort assumptions instead of looping
 # forever if the model keeps finding new ambiguity.
-MAX_CLARIFICATION_ROUNDS = 3
+MAX_CLARIFICATION_ROUNDS = 1
 
 # --- Phase 1: Visual Context Engine -----------------------------------------
 

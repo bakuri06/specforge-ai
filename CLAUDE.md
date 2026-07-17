@@ -121,7 +121,9 @@ Graph flow: `ingest_visual -> ba_refiner -> (conditional) -> qa_matrix_builder -
 unresolved ambiguity/gaps, re-entering `ba_refiner`/`qa_matrix_builder` once
 answered.
 
-Both loops are capped at `MAX_CLARIFICATION_ROUNDS` (3, in `nodes.py`) — a live
+Both loops are capped at `MAX_CLARIFICATION_ROUNDS` (currently 1, in
+`nodes.py` — originally 3, lowered since the smaller 7B models rarely
+resolve ambiguity even by round 3 and the wait per round is long) — a live
 run hit round 3 with DeepSeek-R1 still finding new ambiguity each pass, with no
 way for the user to force progress. Once `len(qa_history)` /
 `len(gap_qa_history)` reaches the cap, `ba_refiner_node`/`qa_matrix_builder_node`
