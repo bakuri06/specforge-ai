@@ -148,6 +148,11 @@ the backend one. Every user action (`clarify-requirements`, `clarify-gaps`,
 response, which is why the checklist editor keeps its own local `matrix` copy
 (`ChecklistEditor.jsx`) until sign-off is submitted.
 
+See README.md's Troubleshooting section for real environment issues hit
+during setup (macOS system-Python contamination causing a LangGraph
+`get_config` crash, port-mismatch CORS/404s, etc.) before assuming a new bug
+report is something novel in the code.
+
 ### Known gaps (intentional, not yet built)
 
 - No persistent checkpointer (sessions lost on backend restart).
