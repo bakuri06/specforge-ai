@@ -66,9 +66,17 @@ This is implemented as a single LangGraph `StateGraph` in
 all three agents call Ollama through the thin wrapper in
 `backend/app/graph/llm.py` (`ollama_chat`, which POSTs to `/api/chat`, supports
 image attachments for the vision model, and for `expect_json=True` calls does
-best-effort brace-extraction parsing plus one corrective retry — re-prompting
-with the malformed output included — before giving up, since local models under
-`format: json` still occasionally wrap output in prose/fences).
+best-effort repair plus one corrective retry before giving up. The repair in
+`_parse_json_with_repair` specifically targets two DeepSeek-R1 quirks hit live
+(worse on the smaller `deepseek-r1:7b` than `:14b`, and worse the longer/more
+structured the requested string value is): it strips any `<think>...</think>`
+reasoning block before brace-extracting (R1 emits these even under
+`format: json`, and stray braces inside the reasoning text would otherwise
+confuse naive brace-slicing), and parses with `json.loads(..., strict=False)`
+so a literal unescaped newline inside a string value (e.g. a multi-paragraph
+markdown spec) doesn't raise `Invalid control character` instead of just
+being treated as part of the string. See `test_llm_parsing.py` for the exact
+repro of both.
 
 The httpx timeout for every Ollama call is `settings.ollama_timeout_seconds`
 (600s default, env `OLLAMA_TIMEOUT_SECONDS`) — a live run on modest hardware

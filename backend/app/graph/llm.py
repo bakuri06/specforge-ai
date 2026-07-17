@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 import time
 from typing import Optional, Union
 
@@ -9,6 +10,8 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 async def ollama_chat(
@@ -38,7 +41,9 @@ async def ollama_chat(
             "Your previous response was not valid JSON:\n"
             f"{content}\n\n"
             "Respond again with ONLY the JSON object described above. No prose, "
-            "no markdown code fences, no explanation."
+            "no markdown code fences, no <think> reasoning blocks, no "
+            "explanation. Escape every newline inside a string value as \\n "
+            "rather than a literal line break."
         )
         retry_content = await _raw_chat(model, corrected_prompt, images, expect_json)
         return _parse_json_with_repair(retry_content)
@@ -92,11 +97,20 @@ def _encode_image(path: str) -> str:
 
 
 def _parse_json_with_repair(content: str) -> dict:
-    """Best-effort recovery when the model wraps JSON in prose or code fences."""
+    """Best-effort recovery for common local-model JSON quirks:
+
+    - Reasoning models (DeepSeek-R1) prefixing the answer with a
+      <think>...</think> block even under format: json.
+    - Prose or markdown code fences wrapped around the JSON object.
+    - Literal, unescaped newlines/control characters inside string values
+      (e.g. a multi-paragraph markdown spec) instead of an escaped \\n —
+      json.loads(strict=False) allows these rather than rejecting them.
+    """
+    content = _THINK_BLOCK_RE.sub("", content).strip()
     try:
-        return json.loads(content)
+        return json.loads(content, strict=False)
     except json.JSONDecodeError:
         start, end = content.find("{"), content.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(content[start : end + 1])
+            return json.loads(content[start : end + 1], strict=False)
         raise
