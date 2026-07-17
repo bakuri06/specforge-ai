@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { getAvailableModels } from '../api/client.js'
 
+const VISION_MODEL = 'qwen2.5vl:7b'
+
 const MODEL_LABELS = {
   visionModel: 'Vision model (screenshot parsing)',
   reasoningModel: 'Reasoning model (BA/QA agents)',
@@ -13,19 +15,20 @@ export default function UploadStep({ onSubmit, submitting, error }) {
   const [files, setFiles] = useState([])
   const [legacyFiles, setLegacyFiles] = useState([])
 
-  const [availableModels, setAvailableModels] = useState(null)
+  // Reasoning/formatter dropdown options (vision is fixed, not driven by this)
+  const [textModels, setTextModels] = useState(null)
   const [modelsError, setModelsError] = useState(null)
-  const [visionModel, setVisionModel] = useState('')
+  const [visionModel, setVisionModel] = useState(VISION_MODEL)
   const [reasoningModel, setReasoningModel] = useState('')
   const [formatterModel, setFormatterModel] = useState('')
 
   useEffect(() => {
     getAvailableModels()
       .then((data) => {
-        const models = data.models || []
-        const pick = (preferred) => (models.includes(preferred) ? preferred : models[0] || '')
-        setAvailableModels(models)
-        setVisionModel(pick(data.defaults?.vision_model))
+        const nonVisionModels = (data.models || []).filter((m) => m !== VISION_MODEL)
+        const pick = (preferred) =>
+          nonVisionModels.includes(preferred) ? preferred : nonVisionModels[0] || ''
+        setTextModels(nonVisionModels)
         setReasoningModel(pick(data.defaults?.reasoning_model))
         setFormatterModel(pick(data.defaults?.formatter_model))
       })
@@ -51,14 +54,14 @@ export default function UploadStep({ onSubmit, submitting, error }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      {availableModels && availableModels.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:grid-cols-3">
+      {textModels && (
+        <div className="flex flex-row gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
           {[
-            ['visionModel', visionModel, setVisionModel],
-            ['reasoningModel', reasoningModel, setReasoningModel],
-            ['formatterModel', formatterModel, setFormatterModel],
-          ].map(([key, value, setValue]) => (
-            <div key={key}>
+            ['visionModel', visionModel, setVisionModel, [VISION_MODEL]],
+            ['reasoningModel', reasoningModel, setReasoningModel, textModels],
+            ['formatterModel', formatterModel, setFormatterModel, textModels],
+          ].map(([key, value, setValue, options]) => (
+            <div key={key} className="min-w-0 flex-1">
               <label className="block text-xs font-medium text-slate-600 mb-1">
                 {MODEL_LABELS[key]}
               </label>
@@ -67,7 +70,7 @@ export default function UploadStep({ onSubmit, submitting, error }) {
                 onChange={(event) => setValue(event.target.value)}
                 className="w-full rounded border border-slate-300 py-1.5 px-2 text-sm focus:border-indigo-500 focus:ring-indigo-500"
               >
-                {availableModels.map((model) => (
+                {options.map((model) => (
                   <option key={model} value={model}>
                     {model}
                   </option>
