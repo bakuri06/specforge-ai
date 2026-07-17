@@ -1,9 +1,9 @@
 # SpecForge AI
 
-Intelligent Requirements-to-Test State Machine. A local, multi-model, containerized
-agent network that turns raw requirements (text/PDF/CSV/screenshots) into a polished
-spec, a QA test strategy matrix, and export-ready test artifacts (TestRail Markdown,
-qTest CSV, Playwright TS stub).
+Intelligent Requirements-to-Test State Machine. A local, multi-model agent network
+that turns raw requirements (text/PDF/CSV/screenshots) into a polished spec, a QA
+test strategy matrix, and export-ready test artifacts (TestRail Markdown, qTest
+CSV, Playwright TS stub).
 
 ## Architecture
 
@@ -23,7 +23,6 @@ edit step before formatting. See `backend/app/graph/`.
 ```
 backend/    FastAPI + LangGraph orchestration, Ollama client, file parsers
 frontend/   React (Vite) + Tailwind multi-step wizard UI
-docker-compose.yml   wires both containers to the host's native Ollama daemon
 ```
 
 ## Prerequisites
@@ -34,14 +33,9 @@ docker-compose.yml   wires both containers to the host's native Ollama daemon
   ollama pull deepseek-r1:14b
   ollama pull qwen2.5-coder:14b
   ```
-- Docker + Docker Compose (for the containerized run), OR Python 3.11+ and Node 20+
-  for native dev.
+- Python 3.9+ and Node 20+.
 
-> Note: this scaffold was built in a sandbox with no internet access, no Docker, and
-> no local Ollama daemon, so none of the commands below have been executed here.
-> Run them on your actual dev machine.
-
-## Native dev (fastest iteration loop)
+## Setup
 
 **Backend**
 ```
@@ -66,15 +60,6 @@ npm run dev
 ```
 
 The frontend expects the backend at `http://localhost:8000` (see `frontend/.env`).
-
-## Docker Compose
-
-```
-docker compose up --build
-```
-
-Backend on `:8000`, frontend on `:5173`. The backend talks to Ollama on the host via
-`http://host.docker.internal:11434` (already wired in `docker-compose.yml`).
 
 ## Current state
 

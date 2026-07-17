@@ -38,10 +38,9 @@ npm run build
 ```
 No test runner is configured for the frontend yet.
 
-**Full stack via Docker Compose** (from repo root): `docker compose up --build`
-— backend on `:8000`, frontend on `:5173`. The backend container reaches the
-*host's* native Ollama daemon via `http://host.docker.internal:11434` (set in
-`docker-compose.yml`), since Ollama itself is not containerized.
+There is no Docker setup — the project runs natively (backend via `uvicorn`,
+frontend via Vite's dev server), deliberately, since there's no need to host
+or containerize this for the hackathon.
 
 **Required local dependency**: Ollama running natively with three models pulled —
 `qwen2.5vl:7b` (vision), `deepseek-r1:14b` (reasoning), `qwen2.5-coder:14b`
