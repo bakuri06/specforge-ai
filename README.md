@@ -46,12 +46,17 @@ docker-compose.yml   wires both containers to the host's native Ollama daemon
 **Backend**
 ```
 cd backend
-python -m venv .venv
+python3 -m venv .venv
+source .venv/bin/activate   # macOS/Linux
 .venv\Scripts\activate      # Windows
 pip install -r requirements.txt
 cp .env.example .env        # adjust OLLAMA_BASE_URL if needed
 uvicorn app.main:app --reload --port 8000
 ```
+If `python3`/`pip` aren't found at all, Python itself isn't installed —
+macOS: `brew install python@3.11`. Once the venv is activated (prompt shows
+`(.venv)`), `pip` refers to the venv's own pip; there's no need for a
+system-wide `pip`/`pip3`.
 
 **Frontend**
 ```

@@ -14,11 +14,14 @@ entirely against local Ollama models. Backend is FastAPI + LangGraph
 
 **Backend** (from `backend/`):
 ```
-python -m venv .venv && .venv\Scripts\activate      # Windows
+python3 -m venv .venv
+source .venv/bin/activate   # macOS/Linux — use .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
+`pip`/`python` alone often don't exist on macOS outside an activated venv —
+use `python3`, then activate the venv before calling plain `pip`.
 Run tests (needs dev deps, not in the base `requirements.txt`):
 ```
 pip install -r requirements-dev.txt
@@ -100,12 +103,22 @@ to run) rather than tracking status separately — `snapshot.next` containing
 
 ### Ingestion
 
-`POST /api/sessions/` accepts multipart form data (`text`, `legacy_test_cases`,
-`files[]`). File routing by MIME/extension happens in the router itself, not in
-the graph: PDFs and CSVs are extracted to text synchronously via
-`app/services/file_parser.py` before the graph ever runs; images are saved to
-`storage/<session_id>/` and passed as `image_paths` into the initial state, to be
-read and base64-encoded by the vision node at graph-execution time.
+`POST /api/sessions/` accepts multipart form data with two separate upload
+channels — `files[]` for requirements-side attachments and `legacy_files[]` for
+an uploaded legacy test suite — plus `text` and `legacy_test_cases` as plain
+form fields for pasted content. Files in `files[]` are appended to
+`requirements_draft`; files in `legacy_files[]` are appended to
+`legacy_test_cases`. These are intentionally separate fields, not a single
+upload routed by content — an early version conflated them, which meant an
+uploaded legacy CSV silently ended up in the requirements text instead (see
+`test_session_router.py` for the regression tests pinning this).
+
+File routing by MIME/extension happens in the router itself, not in the graph:
+PDFs and CSVs are extracted to text synchronously via
+`app/services/file_parser.py` before the graph ever runs; images (only valid
+in `files[]`) are saved to `storage/<session_id>/` and passed as `image_paths`
+into the initial state, to be read and base64-encoded by the vision node at
+graph-execution time.
 
 ### Frontend state machine
 
