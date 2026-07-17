@@ -26,6 +26,9 @@ class SessionStateResponse(BaseModel):
     test_matrix: list[TestMatrixItem] = []
     output_format: Optional[Literal["testrail", "qtest", "playwright"]] = None
     formatted_output: Optional[str] = None
+    vision_model: Optional[str] = None
+    reasoning_model: Optional[str] = None
+    formatter_model: Optional[str] = None
 
 
 class ClarificationAnswers(BaseModel):

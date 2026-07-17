@@ -54,6 +54,9 @@ async def _to_response(session_id: str) -> SessionStateResponse:
         test_matrix=values.get("test_matrix", []),
         output_format=values.get("output_format"),
         formatted_output=values.get("formatted_output"),
+        vision_model=values.get("vision_model") or settings.vision_model,
+        reasoning_model=values.get("reasoning_model") or settings.reasoning_model,
+        formatter_model=values.get("formatter_model") or settings.formatter_model,
     )
 
 
@@ -81,6 +84,9 @@ async def start_session(
     legacy_test_cases: str = Form(""),
     files: list[UploadFile] = File(default=[]),
     legacy_files: list[UploadFile] = File(default=[]),
+    vision_model: str = Form(""),
+    reasoning_model: str = Form(""),
+    formatter_model: str = Form(""),
 ):
     session_id = str(uuid.uuid4())
     logger.info(
@@ -120,6 +126,9 @@ async def start_session(
         "legacy_test_cases": "\n\n".join(legacy_parts),
         "qa_history": [],
         "gap_qa_history": [],
+        "vision_model": vision_model or settings.vision_model,
+        "reasoning_model": reasoning_model or settings.reasoning_model,
+        "formatter_model": formatter_model or settings.formatter_model,
     }
 
     logger.info("[%s] running graph (this can take a while)...", session_id)

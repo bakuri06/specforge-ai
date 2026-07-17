@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import session
+from app.routers import models, session
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(session.router)
+app.include_router(models.router)
 
 
 @app.exception_handler(httpx.TimeoutException)

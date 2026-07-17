@@ -8,12 +8,28 @@ async function handleResponse(response) {
   return response.json()
 }
 
-export async function startSession({ text, legacyTestCases, files, legacyFiles = [] }) {
+export async function getAvailableModels() {
+  const response = await fetch(`${API_BASE_URL}/api/models`)
+  return handleResponse(response)
+}
+
+export async function startSession({
+  text,
+  legacyTestCases,
+  files,
+  legacyFiles = [],
+  visionModel,
+  reasoningModel,
+  formatterModel,
+}) {
   const formData = new FormData()
   formData.append('text', text)
   formData.append('legacy_test_cases', legacyTestCases)
   files.forEach((file) => formData.append('files', file))
   legacyFiles.forEach((file) => formData.append('legacy_files', file))
+  if (visionModel) formData.append('vision_model', visionModel)
+  if (reasoningModel) formData.append('reasoning_model', reasoningModel)
+  if (formatterModel) formData.append('formatter_model', formatterModel)
 
   const response = await fetch(`${API_BASE_URL}/api/sessions/`, {
     method: 'POST',

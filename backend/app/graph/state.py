@@ -18,6 +18,12 @@ class TestMatrixItemDict(TypedDict):
 class SpecForgeState(TypedDict, total=False):
     session_id: str
 
+    # Per-session model selection (falls back to app.config.settings defaults
+    # when not provided at session start)
+    vision_model: str
+    reasoning_model: str
+    formatter_model: str
+
     # Phase 1: ingestion
     requirements_draft: str
     image_paths: list[str]

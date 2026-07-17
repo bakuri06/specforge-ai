@@ -1,4 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { getAvailableModels } from '../api/client.js'
+
+const MODEL_LABELS = {
+  visionModel: 'Vision model (screenshot parsing)',
+  reasoningModel: 'Reasoning model (BA/QA agents)',
+  formatterModel: 'Formatter model (export compiler)',
+}
 
 export default function UploadStep({ onSubmit, submitting, error }) {
   const [text, setText] = useState('')
@@ -6,13 +13,72 @@ export default function UploadStep({ onSubmit, submitting, error }) {
   const [files, setFiles] = useState([])
   const [legacyFiles, setLegacyFiles] = useState([])
 
+  const [availableModels, setAvailableModels] = useState(null)
+  const [modelsError, setModelsError] = useState(null)
+  const [visionModel, setVisionModel] = useState('')
+  const [reasoningModel, setReasoningModel] = useState('')
+  const [formatterModel, setFormatterModel] = useState('')
+
+  useEffect(() => {
+    getAvailableModels()
+      .then((data) => {
+        const models = data.models || []
+        const pick = (preferred) => (models.includes(preferred) ? preferred : models[0] || '')
+        setAvailableModels(models)
+        setVisionModel(pick(data.defaults?.vision_model))
+        setReasoningModel(pick(data.defaults?.reasoning_model))
+        setFormatterModel(pick(data.defaults?.formatter_model))
+      })
+      .catch(() => {
+        // Ollama not reachable yet, or no models pulled — fall back silently
+        // to whatever the backend has configured as defaults.
+        setModelsError('Could not load available models from Ollama; using server defaults.')
+      })
+  }, [])
+
   const handleSubmit = (event) => {
     event.preventDefault()
-    onSubmit({ text, legacyTestCases, files, legacyFiles })
+    onSubmit({
+      text,
+      legacyTestCases,
+      files,
+      legacyFiles,
+      visionModel,
+      reasoningModel,
+      formatterModel,
+    })
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      {availableModels && availableModels.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:grid-cols-3">
+          {[
+            ['visionModel', visionModel, setVisionModel],
+            ['reasoningModel', reasoningModel, setReasoningModel],
+            ['formatterModel', formatterModel, setFormatterModel],
+          ].map(([key, value, setValue]) => (
+            <div key={key}>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                {MODEL_LABELS[key]}
+              </label>
+              <select
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                className="w-full rounded border border-slate-300 py-1.5 px-2 text-sm focus:border-indigo-500 focus:ring-indigo-500"
+              >
+                {availableModels.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+      {modelsError && <p className="text-xs text-slate-400">{modelsError}</p>}
+
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1">
           Requirements (paste text)

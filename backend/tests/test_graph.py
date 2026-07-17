@@ -242,6 +242,35 @@ async def test_qa_matrix_builder_forces_resolution_after_max_rounds(monkeypatch)
     assert "maximum number of clarification rounds" in seen_prompts[-1]
 
 
+async def test_per_session_model_override_is_used_over_settings_default(monkeypatch):
+    """Regression guard for the model selector: a session-level override must
+    actually reach ollama_chat, not just get stored and ignored."""
+    seen_models = []
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        seen_models.append(model)
+        if "senior Business Analyst" in prompt:
+            return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
+        if "senior QA Engineer" in prompt:
+            return {"gaps_found": False, "questions": [], "test_matrix": []}
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-model-override"
+    config = _config(session_id)
+    initial_state = _initial_state(session_id, "Some requirements.")
+    initial_state["reasoning_model"] = "deepseek-r1:7b"
+    initial_state["formatter_model"] = "qwen2.5:7b"
+
+    await graph.ainvoke(initial_state, config=config)
+    await graph.ainvoke(
+        Command(resume={"test_matrix": [], "output_format": "testrail"}), config=config
+    )
+
+    assert seen_models == ["deepseek-r1:7b", "deepseek-r1:7b", "qwen2.5:7b"]
+
+
 async def test_legacy_test_cases_are_forwarded_into_qa_prompt(monkeypatch):
     """Regression guard: Agent 2 must actually see the legacy suite for delta analysis."""
     seen_prompts = []

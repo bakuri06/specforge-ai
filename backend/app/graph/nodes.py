@@ -24,10 +24,11 @@ async def ingest_visual_node(state: SpecForgeState) -> dict:
         return {"visual_context": "", "stage": "ingest_visual"}
 
     logger.info("[%s] ingest_visual: analyzing %d image(s)", session_id, len(image_paths))
+    model = state.get("vision_model") or settings.vision_model
     contexts = []
     for path in image_paths:
         content = await ollama_chat(
-            settings.vision_model,
+            model,
             "Analyze this UI screenshot. Produce a markdown map of every visible "
             "element: accessibility label, element type, input constraints, and "
             "layout order (top to bottom, left to right).",
@@ -135,7 +136,8 @@ async def ba_refiner_node(state: SpecForgeState) -> dict:
         f"# Visual context\n{state.get('visual_context') or '(none)'}\n\n"
         f"# Prior clarifications\n{_format_qa_history(state.get('qa_history', []))}"
     )
-    result = await ollama_chat(settings.reasoning_model, prompt, expect_json=True)
+    model = state.get("reasoning_model") or settings.reasoning_model
+    result = await ollama_chat(model, prompt, expect_json=True)
 
     if force_resolve:
         polished_spec = result.get("polished_spec") or _fallback_spec(state)
@@ -261,7 +263,8 @@ async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
         f"# Legacy test cases\n{state.get('legacy_test_cases') or '(none provided)'}\n\n"
         f"# Prior clarifications\n{_format_qa_history(state.get('gap_qa_history', []))}"
     )
-    result = await ollama_chat(settings.reasoning_model, prompt, expect_json=True)
+    model = state.get("reasoning_model") or settings.reasoning_model
+    result = await ollama_chat(model, prompt, expect_json=True)
 
     if force_resolve:
         test_matrix = result.get("test_matrix", [])
@@ -380,6 +383,7 @@ async def formatter_node(state: SpecForgeState) -> dict:
 
     instructions = FORMATTER_PROMPTS.get(fmt, FORMATTER_PROMPTS["testrail"])
     prompt = f"{instructions}\n\n# Test matrix (JSON)\n{state.get('test_matrix', [])}"
-    output = await ollama_chat(settings.formatter_model, prompt)
+    model = state.get("formatter_model") or settings.formatter_model
+    output = await ollama_chat(model, prompt)
     logger.info("[%s] formatter: done (%d chars)", session_id, len(output))
     return {"formatted_output": output, "stage": "formatter"}

@@ -8,11 +8,16 @@ CSV, Playwright TS stub).
 ## Architecture
 
 ```
-[Raw Inputs] --> [qwen2.5vl:7b]  Visual DOM/element extraction (images only)
-             --> [deepseek-r1:14b]  Agent 1: BA Requirements Refiner (+ clarification loop)
-             --> [deepseek-r1:14b]  Agent 2: QA Test Matrix Builder (+ gap clarifier loop)
-             --> [qwen2.5-coder:14b] Agent 3: Formatter Router (TestRail / qTest / Playwright)
+[Raw Inputs] --> [qwen2.5vl:7b]     Visual DOM/element extraction (images only)
+             --> [deepseek-r1:7b]   Agent 1: BA Requirements Refiner (+ clarification loop)
+             --> [deepseek-r1:7b]   Agent 2: QA Test Matrix Builder (+ gap clarifier loop)
+             --> [qwen2.5:7b]       Agent 3: Formatter Router (TestRail / qTest / Playwright)
 ```
+
+These are just the defaults — the Upload step shows a model selector (backed
+by `GET /api/models`, which lists whatever's actually pulled in your local
+Ollama) so each session can use different models per role without touching
+config.
 
 Orchestration is a LangGraph state machine with two human-in-the-loop interrupt
 points (ambiguity clarification, test-gap clarification) plus a manual checklist
@@ -27,12 +32,15 @@ frontend/   React (Vite) + Tailwind multi-step wizard UI
 
 ## Prerequisites
 
-- [Ollama](https://ollama.com) running natively on the host with the three models pulled:
+- [Ollama](https://ollama.com) running natively on the host with at least these models pulled:
   ```
   ollama pull qwen2.5vl:7b
-  ollama pull deepseek-r1:14b
-  ollama pull qwen2.5-coder:14b
+  ollama pull deepseek-r1:7b
+  ollama pull qwen2.5:7b
   ```
+  Pull additional/larger models (e.g. `deepseek-r1:14b`, `qwen2.5-coder:14b`)
+  too if you want them selectable — the Upload step's model dropdowns list
+  whatever `ollama list` shows, nothing is hardcoded on the frontend.
 - Python 3.9+ and Node 20+.
 
 ## Setup

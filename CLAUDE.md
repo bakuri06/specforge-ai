@@ -42,10 +42,12 @@ There is no Docker setup — the project runs natively (backend via `uvicorn`,
 frontend via Vite's dev server), deliberately, since there's no need to host
 or containerize this for the hackathon.
 
-**Required local dependency**: Ollama running natively with three models pulled —
-`qwen2.5vl:7b` (vision), `deepseek-r1:14b` (reasoning), `qwen2.5-coder:14b`
-(formatting). Model names and the Ollama base URL are configurable via env vars
-(see `backend/app/config.py` / `.env.example`).
+**Required local dependency**: Ollama running natively with at least
+`qwen2.5vl:7b` (vision), `deepseek-r1:7b` (reasoning), `qwen2.5:7b`
+(formatting) pulled — these are just the `app/config.py` defaults, not a hard
+requirement; any pulled model can be selected per-session (see Model
+selection below). The Ollama base URL and defaults are configurable via env
+vars (see `.env.example`).
 
 ## Architecture
 
@@ -159,6 +161,29 @@ PDFs and CSVs are extracted to text synchronously via
 in `files[]`) are saved to `storage/<session_id>/` and passed as `image_paths`
 into the initial state, to be read and base64-encoded by the vision node at
 graph-execution time.
+
+### Model selection
+
+Each session can override `vision_model`/`reasoning_model`/`formatter_model`
+independently instead of being stuck with `app/config.py`'s defaults. The
+override is a plain value flowing through the system, not a separate
+mechanism: `start_session` accepts three optional form fields, writes
+whatever was chosen (or the setting default, if blank) directly into
+`SpecForgeState`, and each node resolves its own model with
+`state.get("<role>_model") or settings.<role>_model` rather than reading
+`settings` directly — see the `model = ...` line at the top of
+`ingest_visual_node`/`ba_refiner_node`/`qa_matrix_builder_node`/
+`formatter_node`. `_to_response` echoes the resolved models back on every
+response so the frontend (and logs, via `llm.py`'s existing per-call model
+logging) always reflect what's actually running for that session, not just
+what's configured.
+
+`GET /api/models` (`app/routers/models.py`) proxies Ollama's own `/api/tags`
+to list whatever's actually pulled locally, plus the configured defaults —
+this is what populates the Upload step's three model dropdowns
+(`UploadStep.jsx`). If Ollama isn't reachable when this loads, the frontend
+catches the failure and simply doesn't render the selector, falling back
+silently to the backend's configured defaults rather than blocking the form.
 
 ### Frontend state machine
 
