@@ -1,4 +1,5 @@
 import logging
+import re
 
 from langgraph.types import interrupt
 
@@ -74,6 +75,11 @@ Respond with ONLY a JSON object, no prose, matching this shape:
   generalize them away. Be thorough: several sentences of concrete behavior per
   section, not a one-line restatement of the section title.
 
+IMPORTANT: "polished_spec" must be ONE markdown STRING containing all the
+section headings below inside that single string (e.g. "## Overview\\nSome
+text\\n\\n## User Flow\\n..."). It must NOT be a JSON object/dictionary with
+each section name as a separate key.
+
 {BA_REFINER_SPEC_SECTIONS}
 """
 
@@ -90,6 +96,10 @@ section instead of asking another question, and also list it under
 
 Respond with ONLY a JSON object, no prose, matching this shape:
 {{"ambiguous": false, "questions": [], "polished_spec": "..."}}
+
+IMPORTANT: "polished_spec" must be ONE markdown STRING containing all the
+section headings below inside that single string. It must NOT be a JSON
+object/dictionary with each section name as a separate key.
 
 {BA_REFINER_SPEC_SECTIONS}
 ## Assumptions
@@ -117,6 +127,20 @@ def _fallback_spec(state: SpecForgeState) -> str:
     return "\n\n".join(parts)
 
 
+def _coerce_polished_spec(value) -> str:
+    """A smaller model sometimes returns polished_spec as a JSON object with
+    each section as a key (e.g. {"Overview": "...", "User Flow": "..."})
+    instead of one markdown string, despite the prompt saying not to. Repair
+    it into a string rather than letting an invalid shape crash the response."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n\n".join(f"## {key}\n{val}" for key, val in value.items())
+    if isinstance(value, list):
+        return "\n\n".join(str(item) for item in value)
+    return str(value) if value else ""
+
+
 async def ba_refiner_node(state: SpecForgeState) -> dict:
     session_id = state.get("session_id", "?")
     rounds_used = len(state.get("qa_history", []))
@@ -140,7 +164,9 @@ async def ba_refiner_node(state: SpecForgeState) -> dict:
     result = await ollama_chat(model, prompt, expect_json=True)
 
     if force_resolve:
-        polished_spec = result.get("polished_spec") or _fallback_spec(state)
+        polished_spec = _coerce_polished_spec(result.get("polished_spec")) or _fallback_spec(
+            state
+        )
         logger.info(
             "[%s] ba_refiner: forced resolution, polished spec ready (%d chars)",
             session_id,
@@ -164,7 +190,7 @@ async def ba_refiner_node(state: SpecForgeState) -> dict:
             "ambiguity_resolved": False,
             "stage": "ba_refiner",
         }
-    polished_spec = result.get("polished_spec", "")
+    polished_spec = _coerce_polished_spec(result.get("polished_spec", ""))
     logger.info(
         "[%s] ba_refiner: resolved, polished spec ready (%d chars)",
         session_id,
@@ -211,11 +237,16 @@ Respond with ONLY a JSON object, no prose, matching this shape:
   "gaps_found": true|false,
   "questions": ["...", "..."],
   "test_matrix": [
-    {"id": "TC-1", "category": "sunny_day|rainy_day|boundary|edge_case",
-     "title": "...", "description": "...",
-     "status": "new|modified|broken|unchanged", "included": true}
+    {"id": "TC-1", "category": "sunny_day", "title": "...", "description": "...",
+     "status": "new", "included": true}
   ]
 }
+
+"category" must be exactly ONE of these four words: sunny_day, rainy_day,
+boundary, edge_case. Never combine multiple values and never include a "|"
+character in the value.
+"status" must be exactly ONE of these four words: new, modified, broken,
+unchanged.
 
 - If gaps_found is true: include exactly 2-3 targeted questions about the coverage
   gaps and leave test_matrix empty.
@@ -234,12 +265,54 @@ Respond with ONLY a JSON object, no prose, matching this shape:
   "gaps_found": false,
   "questions": [],
   "test_matrix": [
-    {"id": "TC-1", "category": "sunny_day|rainy_day|boundary|edge_case",
-     "title": "...", "description": "...",
-     "status": "new|modified|broken|unchanged", "included": true}
+    {"id": "TC-1", "category": "sunny_day", "title": "...", "description": "...",
+     "status": "new", "included": true}
   ]
 }
+
+"category" must be exactly ONE of these four words: sunny_day, rainy_day,
+boundary, edge_case. Never combine multiple values and never include a "|"
+character in the value.
+"status" must be exactly ONE of these four words: new, modified, broken,
+unchanged.
 """
+
+VALID_CATEGORIES = {"sunny_day", "rainy_day", "boundary", "edge_case"}
+VALID_STATUSES = {"new", "modified", "broken", "unchanged"}
+
+
+def _coerce_enum(value, valid_values: set, fallback: str) -> str:
+    """A smaller model sometimes copies the prompt's own placeholder notation
+    verbatim (e.g. "sunny_day|rainy_day|boundary|edge_case") instead of
+    picking one value. Recover a valid value from that rather than crashing."""
+    if value in valid_values:
+        return value
+    if isinstance(value, str):
+        for token in re.split(r"[|,/]", value):
+            token = token.strip()
+            if token in valid_values:
+                return token
+    return fallback
+
+
+def _coerce_test_matrix(raw_matrix) -> list[dict]:
+    if not isinstance(raw_matrix, list):
+        return []
+    fixed = []
+    for i, item in enumerate(raw_matrix):
+        if not isinstance(item, dict):
+            continue
+        fixed.append(
+            {
+                "id": str(item.get("id") or f"TC-{i + 1}"),
+                "category": _coerce_enum(item.get("category"), VALID_CATEGORIES, "edge_case"),
+                "title": str(item.get("title") or "Untitled scenario"),
+                "description": str(item.get("description") or ""),
+                "status": _coerce_enum(item.get("status"), VALID_STATUSES, "new"),
+                "included": bool(item.get("included", True)),
+            }
+        )
+    return fixed
 
 
 async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
@@ -267,7 +340,7 @@ async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
     result = await ollama_chat(model, prompt, expect_json=True)
 
     if force_resolve:
-        test_matrix = result.get("test_matrix", [])
+        test_matrix = _coerce_test_matrix(result.get("test_matrix", []))
         logger.info(
             "[%s] qa_matrix_builder: forced resolution, %d test scenario(s) generated",
             session_id,
@@ -291,7 +364,7 @@ async def qa_matrix_builder_node(state: SpecForgeState) -> dict:
             "gaps_resolved": False,
             "stage": "qa_matrix_builder",
         }
-    test_matrix = result.get("test_matrix", [])
+    test_matrix = _coerce_test_matrix(result.get("test_matrix", []))
     logger.info(
         "[%s] qa_matrix_builder: resolved, %d test scenario(s) generated",
         session_id,

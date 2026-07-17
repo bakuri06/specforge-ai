@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import httpx
 from fastapi.testclient import TestClient
 
+from app.graph import nodes as nodes_module
 from app.main import app
 from app.routers import session as session_module
 
@@ -74,6 +75,48 @@ def test_pasted_and_uploaded_legacy_cases_are_both_captured(monkeypatch):
     legacy = fake_graph.state["legacy_test_cases"]
     assert "Pasted legacy case" in legacy
     assert "Uploaded case" in legacy
+
+
+def test_malformed_model_output_does_not_crash_response_construction(monkeypatch):
+    """True end-to-end regression for the live crash: runs the REAL graph
+    (not the FakeGraph used elsewhere in this file), since the failure was
+    specifically pydantic rejecting SessionStateResponse(...) when the model
+    returned polished_spec as a dict and category as a pipe-delimited
+    placeholder string copied from the prompt's own shape example."""
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "senior Business Analyst" in prompt:
+            return {
+                "ambiguous": False,
+                "questions": [],
+                "polished_spec": {"Overview": "desc", "Type": "Database"},
+            }
+        if "senior QA Engineer" in prompt:
+            return {
+                "gaps_found": False,
+                "questions": [],
+                "test_matrix": [
+                    {
+                        "id": "TC-1",
+                        "category": "sunny_day|rainy_day|boundary|edge_case",
+                        "title": "Happy path",
+                        "description": "d",
+                        "status": "new|modified|broken|unchanged",
+                        "included": True,
+                    }
+                ],
+            }
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    response = client.post("/api/sessions/", data={"text": "Some requirements"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["polished_spec"], str)
+    assert body["test_matrix"][0]["category"] == "sunny_day"
+    assert body["test_matrix"][0]["status"] == "new"
 
 
 def test_ollama_timeout_returns_helpful_504_not_bare_500(monkeypatch):

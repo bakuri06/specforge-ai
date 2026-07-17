@@ -78,6 +78,26 @@ markdown spec) doesn't raise `Invalid control character` instead of just
 being treated as part of the string. See `test_llm_parsing.py` for the exact
 repro of both.
 
+Getting valid JSON back isn't the same as getting the right *shape* back —
+`_parse_json_with_repair` only guarantees parseable JSON, not that
+`polished_spec` is a string or `category`/`status` are one of the allowed
+enum values. A live run on `deepseek-r1:7b` returned `polished_spec` as a
+JSON object with each section as a key instead of one markdown string, and
+separately returned every `category` as the literal string
+`"sunny_day|rainy_day|boundary|edge_case"` — copying the prompt's own
+shape-example notation verbatim instead of picking one value — which crashed
+`SessionStateResponse(...)`'s pydantic validation in `_to_response`. Both
+`ba_refiner_node` and `qa_matrix_builder_node` now run their result through
+`_coerce_polished_spec`/`_coerce_test_matrix` (with `_coerce_enum` splitting
+on `|`/`,`/`/` to recover a valid token, falling back to a safe default
+otherwise) before returning, at every place the model's result feeds into
+state — not just the `force_resolve` path, since either failure mode can
+happen on a normal resolved pass too. See
+`test_malformed_model_output_does_not_crash_response_construction` in
+`test_session_router.py` for the full end-to-end repro (it runs the real
+graph, not the `_FakeGraph` used by the rest of that file, since the crash
+was specifically in response construction downstream of the graph).
+
 The httpx timeout for every Ollama call is `settings.ollama_timeout_seconds`
 (600s default, env `OLLAMA_TIMEOUT_SECONDS`) — a live run on modest hardware
 hit the old hardcoded 180s ceiling on a 14B model with a large prompt. If this

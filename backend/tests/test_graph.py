@@ -271,6 +271,71 @@ async def test_per_session_model_override_is_used_over_settings_default(monkeypa
     assert seen_models == ["deepseek-r1:7b", "deepseek-r1:7b", "qwen2.5:7b"]
 
 
+async def test_polished_spec_returned_as_dict_is_coerced_to_string(monkeypatch):
+    """Live bug: a smaller model returned polished_spec as a JSON object
+    ({"Overview": "...", "Type": "Database"}) instead of a markdown string,
+    which crashed SessionStateResponse's pydantic validation downstream."""
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "senior Business Analyst" in prompt:
+            return {
+                "ambiguous": False,
+                "questions": [],
+                "polished_spec": {"Overview": "A feature description", "Type": "Database"},
+            }
+        if "senior QA Engineer" in prompt:
+            return {"gaps_found": False, "questions": [], "test_matrix": []}
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-dict-spec"
+    config = _config(session_id)
+    await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+
+    snapshot = await graph.aget_state(config)
+    assert isinstance(snapshot.values["polished_spec"], str)
+    assert "## Overview" in snapshot.values["polished_spec"]
+    assert "A feature description" in snapshot.values["polished_spec"]
+
+
+async def test_category_placeholder_string_is_coerced_to_valid_enum_value(monkeypatch):
+    """Live bug: the model copied the prompt's own shape-example notation
+    ("sunny_day|rainy_day|boundary|edge_case") verbatim as the actual value
+    for every scenario, instead of picking one."""
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "senior Business Analyst" in prompt:
+            return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
+        if "senior QA Engineer" in prompt:
+            return {
+                "gaps_found": False,
+                "questions": [],
+                "test_matrix": [
+                    {
+                        "id": "TC-1",
+                        "category": "sunny_day|rainy_day|boundary|edge_case",
+                        "title": "Happy path",
+                        "description": "d",
+                        "status": "new|modified|broken|unchanged",
+                        "included": True,
+                    }
+                ],
+            }
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-category-placeholder"
+    config = _config(session_id)
+    await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+
+    snapshot = await graph.aget_state(config)
+    matrix = snapshot.values["test_matrix"]
+    assert matrix[0]["category"] == "sunny_day"
+    assert matrix[0]["status"] == "new"
+
+
 async def test_legacy_test_cases_are_forwarded_into_qa_prompt(monkeypatch):
     """Regression guard: Agent 2 must actually see the legacy suite for delta analysis."""
     seen_prompts = []
