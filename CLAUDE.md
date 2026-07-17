@@ -19,7 +19,12 @@ pip install -r requirements.txt
 cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
-Run tests: `pytest` (single test: `pytest tests/test_health.py::test_health`).
+Run tests (needs dev deps, not in the base `requirements.txt`):
+```
+pip install -r requirements-dev.txt
+pytest                                        # single test: pytest tests/test_graph.py::test_straight_through_when_spec_and_matrix_are_clean
+```
+`pytest.ini` sets `asyncio_mode = auto` so async graph tests need no `@pytest.mark.asyncio`.
 No lint/format tooling is configured yet.
 
 **Frontend** (from `frontend/`):
@@ -56,9 +61,17 @@ This is implemented as a single LangGraph `StateGraph` in
 `backend/app/graph/state.py`. Node logic lives in `backend/app/graph/nodes.py`;
 all three agents call Ollama through the thin wrapper in
 `backend/app/graph/llm.py` (`ollama_chat`, which POSTs to `/api/chat`, supports
-image attachments for the vision model, and does best-effort JSON repair for
-`expect_json=True` calls since local models under `format: json` still
-occasionally wrap output in prose/fences).
+image attachments for the vision model, and for `expect_json=True` calls does
+best-effort brace-extraction parsing plus one corrective retry — re-prompting
+with the malformed output included — before giving up, since local models under
+`format: json` still occasionally wrap output in prose/fences).
+
+Routing/loop correctness (`route_ambiguity`, `route_gaps`, the interrupt/resume
+cycle, legacy-test-case forwarding) is covered by
+`backend/tests/test_graph.py`, which monkeypatches `nodes.ollama_chat` — no live
+Ollama needed to verify the state machine itself. What isn't covered by those
+tests: real model output quality (prompt wording, actual ambiguity judgment,
+actual delta analysis) — that still needs a live model pass.
 
 Graph flow: `ingest_visual -> ba_refiner -> (conditional) -> qa_matrix_builder ->
 (conditional) -> checklist_signoff -> formatter`. The two conditional edges
@@ -107,7 +120,12 @@ response, which is why the checklist editor keeps its own local `matrix` copy
 ### Known gaps (intentional, not yet built)
 
 - No persistent checkpointer (sessions lost on backend restart).
-- No structural-repair/retry loop around malformed LLM JSON beyond the
-  best-effort brace-extraction in `llm.py`.
+- JSON repair is one corrective retry, not a full validation/repair loop —
+  malformed output after the retry propagates as an unhandled exception
+  (surfaces to the caller as a 500).
+- Prompts in `nodes.py` have never been run against a live model; expect to
+  iterate on wording once real DeepSeek-R1/Qwen output comes back.
 - Playwright export is prompt-only — no generated file is executed/validated.
-- No automated frontend tests; backend has only a health-check test.
+- No automated frontend tests. Backend tests cover the graph's routing/loop
+  logic and the health check, but not the FastAPI routes themselves
+  (`routers/session.py`) or the file parsers.

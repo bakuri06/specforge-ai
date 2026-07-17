@@ -14,10 +14,34 @@ async def ollama_chat(
 ) -> dict | str:
     """Call Ollama's /api/chat for a single-turn completion.
 
-    When expect_json is True, the model is asked to respond with strict JSON and
-    the result is repaired/parsed into a dict. Ollama isn't reachable from this
-    sandbox, so this has not been exercised against a live daemon yet.
+    When expect_json is True, the model is asked to respond with strict JSON. If
+    parsing still fails (local models under format: json occasionally wrap output
+    in prose or fences anyway), one corrective retry is issued before giving up.
     """
+    content = await _raw_chat(model, prompt, images, expect_json)
+    if not expect_json:
+        return content
+
+    try:
+        return _parse_json_with_repair(content)
+    except json.JSONDecodeError:
+        corrected_prompt = (
+            f"{prompt}\n\n"
+            "Your previous response was not valid JSON:\n"
+            f"{content}\n\n"
+            "Respond again with ONLY the JSON object described above. No prose, "
+            "no markdown code fences, no explanation."
+        )
+        retry_content = await _raw_chat(model, corrected_prompt, images, expect_json)
+        return _parse_json_with_repair(retry_content)
+
+
+async def _raw_chat(
+    model: str,
+    prompt: str,
+    images: list[str] | None,
+    expect_json: bool,
+) -> str:
     message: dict = {"role": "user", "content": prompt}
     if images:
         message["images"] = [_encode_image(path) for path in images]
@@ -33,11 +57,7 @@ async def ollama_chat(
     async with httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=180.0) as client:
         response = await client.post("/api/chat", json=payload)
         response.raise_for_status()
-        content = response.json()["message"]["content"]
-
-    if expect_json:
-        return _parse_json_with_repair(content)
-    return content
+        return response.json()["message"]["content"]
 
 
 def _encode_image(path: str) -> str:
