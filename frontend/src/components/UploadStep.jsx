@@ -18,25 +18,37 @@ export default function UploadStep({ onSubmit, submitting, error }) {
   // Reasoning/formatter dropdown options (vision is fixed, not driven by this)
   const [textModels, setTextModels] = useState(null)
   const [modelsError, setModelsError] = useState(null)
+  const [modelsLoading, setModelsLoading] = useState(false)
   const [visionModel, setVisionModel] = useState(VISION_MODEL)
   const [reasoningModel, setReasoningModel] = useState('')
   const [formatterModel, setFormatterModel] = useState('')
 
-  useEffect(() => {
+  const loadModels = () => {
+    setModelsLoading(true)
+    setModelsError(null)
     getAvailableModels()
       .then((data) => {
         const nonVisionModels = (data.models || []).filter((m) => m !== VISION_MODEL)
-        const pick = (preferred) =>
-          nonVisionModels.includes(preferred) ? preferred : nonVisionModels[0] || ''
+        const pick = (preferred, current) =>
+          nonVisionModels.includes(current)
+            ? current
+            : nonVisionModels.includes(preferred)
+              ? preferred
+              : nonVisionModels[0] || ''
         setTextModels(nonVisionModels)
-        setReasoningModel(pick(data.defaults?.reasoning_model))
-        setFormatterModel(pick(data.defaults?.formatter_model))
+        setReasoningModel((current) => pick(data.defaults?.reasoning_model, current))
+        setFormatterModel((current) => pick(data.defaults?.formatter_model, current))
       })
       .catch(() => {
         // Ollama not reachable yet, or no models pulled — fall back silently
         // to whatever the backend has configured as defaults.
         setModelsError('Could not load available models from Ollama; using server defaults.')
       })
+      .finally(() => setModelsLoading(false))
+  }
+
+  useEffect(() => {
+    loadModels()
   }, [])
 
   const handleSubmit = (event) => {
@@ -55,7 +67,21 @@ export default function UploadStep({ onSubmit, submitting, error }) {
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       {textModels && (
-        <div className="flex flex-row gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-500">
+              Models pulled just now? Refresh the list below.
+            </span>
+            <button
+              type="button"
+              onClick={loadModels}
+              disabled={modelsLoading}
+              className="text-xs font-medium text-indigo-600 hover:text-indigo-500 disabled:opacity-50"
+            >
+              {modelsLoading ? 'Refreshing...' : 'Refresh models'}
+            </button>
+          </div>
+          <div className="flex flex-row gap-4">
           {[
             ['visionModel', visionModel, setVisionModel, [VISION_MODEL]],
             ['reasoningModel', reasoningModel, setReasoningModel, textModels],
@@ -78,6 +104,7 @@ export default function UploadStep({ onSubmit, submitting, error }) {
               </select>
             </div>
           ))}
+          </div>
         </div>
       )}
       {modelsError && <p className="text-xs text-slate-400">{modelsError}</p>}
