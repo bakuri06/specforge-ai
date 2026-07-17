@@ -1,5 +1,6 @@
 import base64
 import json
+from typing import Optional, Union
 
 import httpx
 
@@ -9,9 +10,9 @@ from app.config import settings
 async def ollama_chat(
     model: str,
     prompt: str,
-    images: list[str] | None = None,
+    images: Optional[list[str]] = None,
     expect_json: bool = False,
-) -> dict | str:
+) -> Union[dict, str]:
     """Call Ollama's /api/chat for a single-turn completion.
 
     When expect_json is True, the model is asked to respond with strict JSON. If
@@ -39,7 +40,7 @@ async def ollama_chat(
 async def _raw_chat(
     model: str,
     prompt: str,
-    images: list[str] | None,
+    images: Optional[list[str]],
     expect_json: bool,
 ) -> str:
     message: dict = {"role": "user", "content": prompt}
