@@ -1,7 +1,10 @@
+import cv2
+import numpy as np
 from langgraph.types import Command
 
 from app.graph import nodes as nodes_module
 from app.graph.build import graph
+from app.services import vision_ocr
 
 
 def _initial_state(
@@ -555,11 +558,20 @@ async def test_legacy_test_cases_are_forwarded_into_qa_prompt(monkeypatch):
     assert legacy in seen_prompts[0]
 
 
-async def test_flow_b_qa_direct_still_processes_uploaded_images(monkeypatch):
+async def test_flow_b_qa_direct_still_processes_uploaded_images(monkeypatch, tmp_path):
     """Flow B (qa_direct) must still route through ingest_visual so uploaded
     screenshots aren't silently dropped, even though it skips the BA refiner
-    entirely (start_session pre-populates polished_spec directly)."""
+    entirely (start_session pre-populates polished_spec directly). Since
+    ingest_visual_node now goes through vision_ocr.extract_text_from_screenshot
+    (preprocess + fail-safe OCR fallback) rather than calling ollama_chat
+    directly, the fake image path must be a real, readable image (preprocess_image
+    opens it with cv2 before the mocked ollama_chat is ever reached), and
+    ollama_chat must be patched on both nodes_module and vision_ocr - they're
+    separate name bindings from the same `from ... import ollama_chat` shape,
+    each resolved independently at call time within its own module."""
     vision_calls = {"count": 0}
+    image_path = str(tmp_path / "screenshot.png")
+    cv2.imwrite(image_path, np.full((400, 800, 3), 255, dtype=np.uint8))
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
         if images:
@@ -570,6 +582,7 @@ async def test_flow_b_qa_direct_still_processes_uploaded_images(monkeypatch):
         return "FORMATTED"
 
     monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr(vision_ocr, "ollama_chat", fake_ollama_chat)
 
     session_id = "test-flow-b-images"
     config = _config(session_id)
@@ -578,7 +591,7 @@ async def test_flow_b_qa_direct_still_processes_uploaded_images(monkeypatch):
         "",
         workflow_mode="qa_direct",
         polished_spec="Already-refined spec text",
-        image_paths=["fake/screenshot.png"],
+        image_paths=[image_path],
     )
 
     await graph.ainvoke(initial_state, config=config)

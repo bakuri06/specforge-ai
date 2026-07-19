@@ -41,6 +41,14 @@ frontend/   React (Vite) + Tailwind multi-step wizard UI
   Pull additional/larger models (e.g. `deepseek-r1:14b`, `qwen2.5-coder:14b`)
   too if you want them selectable — the Upload step's model dropdowns list
   whatever `ollama list` shows, nothing is hardcoded on the frontend.
+- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installed
+  natively — `brew install tesseract` (macOS) / `apt install tesseract-ocr`
+  (Linux) / the [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki).
+  This is the deterministic fallback `ingest_visual_node` uses when the
+  vision model returns degraded/gibberish output (see
+  `backend/app/services/vision_ocr.py`); `pytesseract` (in
+  `requirements.txt`) is just a thin wrapper around this binary, not a
+  replacement for it.
 - Python 3.9+ and Node 20+.
 
 ## Setup
@@ -115,6 +123,13 @@ environment, independent of this app's code, run
 `python3 backend/scripts/repro_interrupt.py` — it should print `SUCCESS:
 interrupt()/resume works in this environment.` If it doesn't, the problem is
 in the Python/langgraph installation, not in SpecForge AI.
+
+**`pytesseract.pytesseract.TesseractNotFoundError` / `tesseract is not installed or it's not in your PATH`**
+The Tesseract *binary* isn't installed, or isn't on PATH — see Prerequisites
+above. `pip install pytesseract` only installs the Python wrapper, not the
+binary it shells out to. On Windows, if you installed Tesseract but it's
+still not found, set `TESSERACT_CMD` in `backend/.env` to the full path of
+`tesseract.exe` (see `.env.example`) instead of relying on PATH.
 
 **Uploaded legacy CSV lands in the requirements text instead of legacy test cases**
 Fixed as of commit `701343c` — use the dedicated "upload a legacy CSV suite"

@@ -14,3 +14,11 @@ pydantic>=2.9,<3
 pydantic-settings>=2.5,<3
 pypdf>=5.0,<6
 python-multipart>=0.0.12,<0.1
+# Deterministic OCR fail-safe for ingest_visual_node when the vision LLM
+# returns degraded/gibberish output - see app/services/vision_ocr.py.
+# pytesseract is just a wrapper: the Tesseract binary itself must also be
+# installed natively (see README setup instructions), the same kind of
+# native/system dependency this project already has with Ollama.
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3
+pytesseract>=0.3.10,<0.4

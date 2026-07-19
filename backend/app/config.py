@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     formatter_model: str = "qwen2.5:7b"
     cors_origins: str = "http://localhost:5173"
     storage_dir: str = "./storage"
+    # Only needed on machines where the Tesseract binary isn't on PATH (common
+    # on Windows) - e.g. r"C:\Program Files\Tesseract-OCR\tesseract.exe".
+    tesseract_cmd: str = ""
 
 
 settings = Settings()

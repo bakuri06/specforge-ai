@@ -11,6 +11,7 @@ from app.config import settings
 from app.graph.llm import _parse_json_with_repair, ollama_chat
 from app.graph.state import SpecForgeState
 from app.services.samples import few_shot_block
+from app.services.vision_ocr import extract_text_from_screenshot
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,12 @@ def route_after_ingest(state: SpecForgeState) -> str:
 
 # --- Phase 1: Visual Context Engine -----------------------------------------
 
+VISION_PROMPT = (
+    "Analyze this UI screenshot. Produce a markdown map of every visible "
+    "element: accessibility label, element type, input constraints, and "
+    "layout order (top to bottom, left to right)."
+)
+
 
 async def ingest_visual_node(state: SpecForgeState, config: Optional[dict] = None) -> dict:
     session_id = state.get("session_id", "?")
@@ -54,13 +61,11 @@ async def ingest_visual_node(state: SpecForgeState, config: Optional[dict] = Non
     model = state.get("vision_model") or settings.vision_model
     contexts = []
     for path in image_paths:
-        content = await ollama_chat(
-            model,
-            "Analyze this UI screenshot. Produce a markdown map of every visible "
-            "element: accessibility label, element type, input constraints, and "
-            "layout order (top to bottom, left to right).",
-            images=[path],
-        )
+        # extract_text_from_screenshot preprocesses the image (resize/pad/
+        # binarize) and falls back to deterministic OCR if the vision model
+        # throws or returns degraded/gibberish output - see
+        # app/services/vision_ocr.py.
+        content = await extract_text_from_screenshot(path, model=model, prompt=VISION_PROMPT)
         contexts.append(content)
     logger.info("[%s] ingest_visual: done", session_id)
     return {"visual_context": "\n\n---\n\n".join(contexts), "stage": "ingest_visual"}

@@ -217,6 +217,57 @@ node treats the result as resolved regardless of what the model reports back
 on the forced call, `_fallback_spec()` synthesizes one from the raw
 requirements + gathered Q&A rather than leaving `polished_spec` empty.
 
+### Vision OCR fail-safe (`ingest_visual_node`, `app/services/vision_ocr.py`)
+
+`ingest_visual_node` no longer calls `ollama_chat` directly for each
+screenshot — it calls `vision_ocr.extract_text_from_screenshot(path,
+model=model, prompt=VISION_PROMPT)`, a dual-layer fail-safe: try the vision
+LLM first, and fall back to deterministic OCR (`pytesseract`) if it throws or
+its output looks like garbage. Added because `qwen2.5vl:7b` occasionally
+returns degraded token-loop/gibberish output on scaled-down or low-contrast
+screenshots, with no way to detect or recover from that today.
+
+Both paths run against the same preprocessed image (`preprocess_image`):
+resize the long side into `[768, 1344]px` preserving aspect ratio, add a 20px
+solid white border (prevents text clipping at the edges), then grayscale +
+Gaussian blur + Otsu's binarization. Order matters — resize happens before
+padding so the size target reflects actual content, not border pixels. The
+binarized array is used directly for the `pytesseract` fallback and written
+to a throwaway temp PNG for the vision-LLM call (`ollama_chat`'s `images`
+param only accepts file paths, not in-memory arrays); the temp file is
+removed in a `finally` block regardless of outcome.
+
+`_looks_like_gibberish` flags the vision output as a failure on any of: zero
+alphabetic characters, a run of 10+ identical characters (Qwen-VL's
+degenerate token-loop failure mode), a cluster of block/shade/geometric
+Unicode characters or the `U+FFFD` replacement character (garbled-decode
+artifacts), no word-like token at all, or an alpha-character ratio below 15%.
+Any of these — or the vision call raising an exception at all — triggers the
+`pytesseract.image_to_string()` fallback on the same preprocessed array.
+
+`pytesseract` is only a Python wrapper around the Tesseract binary, which
+must be installed natively (see README Prerequisites) — the same kind of
+system-level dependency this project already has with Ollama. `settings.tesseract_cmd`
+(env `TESSERACT_CMD`) is only needed when Tesseract isn't on `PATH` (common on
+Windows), same override pattern as every other `app/config.py` setting.
+
+Tests (`backend/tests/test_vision_ocr.py`) always monkeypatch both
+`vision_ocr.ollama_chat` and `vision_ocr.pytesseract.image_to_string` — no
+live Ollama or a real Tesseract install needed to verify the fail-safe logic
+itself, matching this project's existing "mock the LLM call, not the
+mechanism" testing convention. One non-obvious wrinkle this caused: existing
+graph tests that monkeypatch `nodes_module.ollama_chat` to fake image
+analysis (`test_flow_b_qa_direct_still_processes_uploaded_images`) had to
+also patch `vision_ocr.ollama_chat` — `nodes.py` and `vision_ocr.py` each do
+their own `from app.graph.llm import ollama_chat`, so these are two separate
+name bindings in two separate module namespaces (both call the bare name
+`ollama_chat(...)`, resolved via their *own* module's globals at call time),
+even though they originally point at the same function object. Patching one
+does not affect the other. That test's fake image path also had to become a
+real, readable image file (via `cv2.imwrite` against `tmp_path`) rather than
+a nonexistent placeholder string, since `preprocess_image` now actually opens
+the file with `cv2.imread` before the mocked `ollama_chat` is ever reached.
+
 ### Human-in-the-loop via LangGraph interrupts
 
 There are four pause points, each implemented with `langgraph.types.interrupt()`
