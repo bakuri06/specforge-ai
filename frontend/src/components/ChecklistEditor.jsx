@@ -16,18 +16,25 @@ const STATUS_BADGE = {
 
 const FORMAT_OPTIONS = [
   { value: 'bdd', label: 'BDD / Gherkin (.feature)' },
-  { value: 'testrail', label: 'TestRail (Markdown)' },
+  { value: 'testrail', label: 'TestRail (CSV)' },
   { value: 'qtest', label: 'qTest (CSV)' },
   { value: 'jira_xray', label: 'Jira / Xray (JSON)' },
   { value: 'azure_devops', label: 'Azure DevOps (CSV)' },
 ]
+
+const PRIORITY_OPTIONS = ['High', 'Medium', 'Low']
+const TEST_TYPE_OPTIONS = ['Functional', 'Integration', 'Regression', 'Smoke']
 
 function emptyScenario(category) {
   return {
     id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     category,
     title: '',
-    steps: [{ step_number: 1, action: '', expected_result: '' }],
+    preconditions: '',
+    priority: 'Medium',
+    test_type: 'Functional',
+    module_or_area_path: '',
+    steps: [{ step_number: 1, action: '', data: '', result: '' }],
     status: 'new',
     included: true,
   }
@@ -61,7 +68,7 @@ export default function ChecklistEditor({ testMatrix, onSubmit, submitting }) {
           ...item,
           steps: [
             ...item.steps,
-            { step_number: item.steps.length + 1, action: '', expected_result: '' },
+            { step_number: item.steps.length + 1, action: '', data: '', result: '' },
           ],
         }
       }),
@@ -139,6 +146,46 @@ export default function ChecklistEditor({ testMatrix, onSubmit, submitting }) {
                       placeholder="Scenario title"
                       className="w-full rounded border border-transparent bg-transparent text-sm font-medium text-slate-900 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500"
                     />
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <input
+                        value={item.module_or_area_path}
+                        onChange={(event) =>
+                          updateItem(item.id, { module_or_area_path: event.target.value })
+                        }
+                        placeholder="Module / Area Path"
+                        className="rounded border border-slate-200 bg-transparent p-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500"
+                      />
+                      <select
+                        value={item.priority}
+                        onChange={(event) => updateItem(item.id, { priority: event.target.value })}
+                        className="rounded border border-slate-200 bg-transparent p-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500"
+                      >
+                        {PRIORITY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option} priority
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={item.test_type}
+                        onChange={(event) => updateItem(item.id, { test_type: event.target.value })}
+                        className="rounded border border-slate-200 bg-transparent p-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500"
+                      >
+                        {TEST_TYPE_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        value={item.preconditions}
+                        onChange={(event) =>
+                          updateItem(item.id, { preconditions: event.target.value })
+                        }
+                        placeholder="Preconditions"
+                        className="rounded border border-slate-200 bg-transparent p-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500"
+                      />
+                    </div>
                     <div className="space-y-2 border-l-2 border-slate-200 pl-3">
                       {item.steps.map((step, stepIndex) => (
                         <div key={stepIndex} className="flex gap-2 items-start">
@@ -155,11 +202,18 @@ export default function ChecklistEditor({ testMatrix, onSubmit, submitting }) {
                             className="w-full rounded border border-slate-200 bg-transparent p-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500"
                           />
                           <textarea
-                            value={step.expected_result}
+                            value={step.data}
                             onChange={(event) =>
-                              updateStep(item.id, stepIndex, {
-                                expected_result: event.target.value,
-                              })
+                              updateStep(item.id, stepIndex, { data: event.target.value })
+                            }
+                            rows={2}
+                            placeholder="Test data"
+                            className="w-full rounded border border-slate-200 bg-transparent p-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:bg-white focus:ring-indigo-500"
+                          />
+                          <textarea
+                            value={step.result}
+                            onChange={(event) =>
+                              updateStep(item.id, stepIndex, { result: event.target.value })
                             }
                             rows={2}
                             placeholder="Expected result"

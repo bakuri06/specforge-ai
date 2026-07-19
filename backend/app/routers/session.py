@@ -309,14 +309,29 @@ async def download(session_id: str):
     fmt = snapshot.values.get("output_format", "testrail")
     extension = {
         "bdd": "feature",
-        "testrail": "md",
+        "testrail": "csv",
         "qtest": "csv",
         "jira_xray": "json",
         "azure_devops": "csv",
     }.get(fmt, "txt")
+    media_type = {
+        "bdd": "text/plain",
+        "testrail": "text/csv",
+        "qtest": "text/csv",
+        "jira_xray": "application/json",
+        "azure_devops": "text/csv",
+    }.get(fmt, "text/plain")
+
+    content = output.encode("utf-8")
+    if media_type == "text/csv":
+        # Excel-based consumers (qTest's real .xlsx template, ADO's Excel add-in
+        # path) are well known to misinterpret BOM-less UTF-8 CSVs as the
+        # system codepage, corrupting non-ASCII characters/emoji/curly quotes.
+        content = b"\xef\xbb\xbf" + content
+
     return Response(
-        content=output,
-        media_type="text/plain",
+        content=content,
+        media_type=media_type,
         headers={
             "Content-Disposition": f"attachment; filename=specforge_export.{extension}"
         },

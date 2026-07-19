@@ -1,5 +1,3 @@
-import csv
-import io
 import json
 import logging
 import re
@@ -8,11 +6,12 @@ from typing import Optional
 from langgraph.types import interrupt
 
 from app.config import settings
-from app.graph.llm import _parse_json_with_repair, ollama_chat
+from app.graph.llm import ollama_chat
 from app.graph.prompts import (
     BA_REFINER_FORCE_RESOLVE_SYSTEM,
     BA_REFINER_SYSTEM,
     COMPILE_INSTRUCTION,
+    EXTRACT_TEST_CASES_JSON_SYSTEM,
     FORMAT_SAMPLE_FILES,
     FORMATTER_FORMAT_RULES,
     QA_MATRIX_FORCE_RESOLVE_SYSTEM,
@@ -22,6 +21,12 @@ from app.graph.prompts import (
     VISION_PROMPT,
 )
 from app.graph.state import SpecForgeState
+from app.services.export_serializers import (
+    serialize_azure_devops_csv,
+    serialize_jira_xray_json,
+    serialize_qtest_csv,
+    serialize_testrail_csv,
+)
 from app.services.samples import few_shot_block
 from app.services.vision_ocr import extract_text_from_screenshot
 
@@ -373,19 +378,22 @@ def _coerce_steps(raw_steps, fallback_text: str = "") -> list[dict]:
                     {
                         "step_number": int(step.get("step_number") or i + 1),
                         "action": str(step.get("action") or ""),
-                        "expected_result": str(step.get("expected_result") or ""),
+                        "data": str(step.get("data") or ""),
+                        # Backward-compatible with a model that still returns
+                        # the old "expected_result" key instead of "result".
+                        "result": str(step.get("result") or step.get("expected_result") or ""),
                     }
                 )
             elif step:
                 fixed.append(
-                    {"step_number": i + 1, "action": str(step), "expected_result": ""}
+                    {"step_number": i + 1, "action": str(step), "data": "", "result": ""}
                 )
         if fixed:
             return fixed
     if isinstance(raw_steps, str) and raw_steps.strip():
-        return [{"step_number": 1, "action": raw_steps.strip(), "expected_result": ""}]
+        return [{"step_number": 1, "action": raw_steps.strip(), "data": "", "result": ""}]
     if fallback_text:
-        return [{"step_number": 1, "action": fallback_text, "expected_result": ""}]
+        return [{"step_number": 1, "action": fallback_text, "data": "", "result": ""}]
     return []
 
 
@@ -403,6 +411,10 @@ def _coerce_test_matrix(raw_matrix) -> list[dict]:
                 "id": str(item.get("id") or f"TC-{i + 1}"),
                 "category": _coerce_enum(item.get("category"), VALID_CATEGORIES, "edge_case"),
                 "title": title,
+                "preconditions": str(item.get("preconditions") or ""),
+                "priority": str(item.get("priority") or ""),
+                "test_type": str(item.get("test_type") or ""),
+                "module_or_area_path": str(item.get("module_or_area_path") or ""),
                 "steps": steps,
                 "status": _coerce_enum(item.get("status"), VALID_STATUSES, "new"),
                 "included": bool(item.get("included", True)),
@@ -523,59 +535,6 @@ async def checklist_signoff_node(state: SpecForgeState, config: Optional[dict] =
 # --- Phase 4: Agent 3 - Formatter Router -------------------------------------
 
 
-async def _validate_and_repair_json(output: str, model: str, original_prompt: str) -> str:
-    """jira_xray output must be valid JSON. Reuses the same <think>-stripping /
-    brace-extraction / strict=False tolerance already proven for structured
-    model calls elsewhere (app.graph.llm._parse_json_with_repair), then
-    re-serializes for a canonical, guaranteed-valid string instead of storing
-    the model's raw (possibly still slightly malformed) text. One corrective
-    retry on failure, mirroring ollama_chat's own JSON retry pattern."""
-    try:
-        parsed = _parse_json_with_repair(output)
-        return json.dumps(parsed, indent=2)
-    except json.JSONDecodeError:
-        logger.warning("formatter: jira_xray output was not valid JSON, retrying once")
-        corrected_prompt = (
-            f"{original_prompt}\n\n"
-            "Your previous response was not valid JSON:\n"
-            f"{output}\n\n"
-            "Respond again with ONLY the JSON object described above. No prose, "
-            "no markdown code fences, no <think> reasoning blocks."
-        )
-        retry_output = await ollama_chat(model, corrected_prompt)
-        try:
-            parsed = _parse_json_with_repair(retry_output)
-            return json.dumps(parsed, indent=2)
-        except json.JSONDecodeError:
-            return retry_output
-
-
-def _csv_row_widths(text: str) -> list[int]:
-    reader = csv.reader(io.StringIO(text))
-    return [len(row) for row in reader if row]
-
-
-async def _validate_and_repair_csv(output: str, model: str, original_prompt: str) -> str:
-    """qtest/azure_devops output must be well-formed CSV with a consistent
-    column count across every row. One corrective retry on a shape mismatch,
-    same pattern as the JSON path above."""
-    widths = _csv_row_widths(output)
-    if widths and len(set(widths)) == 1:
-        return output
-
-    logger.warning(
-        "formatter: CSV output has inconsistent column widths %s, retrying once", widths
-    )
-    corrected_prompt = (
-        f"{original_prompt}\n\n"
-        "Your previous response was not valid CSV — every row must have the "
-        f"same number of columns as the header row:\n{output}\n\n"
-        "Respond again with ONLY the corrected CSV, same column structure "
-        "throughout, properly quoting any field that itself contains a comma."
-    )
-    return await ollama_chat(model, corrected_prompt)
-
-
 _FEATURE_LINE_RE = re.compile(r"(?m)^\s*Feature:.*$")
 
 
@@ -602,7 +561,27 @@ def _merge_multiple_bdd_features(output: str) -> str:
     return "".join(pieces)
 
 
+_SERIALIZERS = {
+    "qtest": serialize_qtest_csv,
+    "testrail": serialize_testrail_csv,
+    "azure_devops": serialize_azure_devops_csv,
+    "jira_xray": serialize_jira_xray_json,
+}
+
+
 async def formatter_node(state: SpecForgeState, config: Optional[dict] = None) -> dict:
+    """Deterministic serialization architecture: for every format except
+    bdd, the LLM's only job (and only in format_only/translate mode - compile
+    mode already has the enriched test_matrix from checklist sign-off) is
+    producing the same enriched test-case JSON shape the QA Matrix Builder
+    produces; every format-specific CSV/JSON layout concern lives in
+    app.services.export_serializers instead of prompt wording, since
+    prompt-only enforcement already proved unreliable for structural
+    correctness on local 7B models (this is what qtest/azure_devops/jira_xray
+    used to be - LLM-written CSV/JSON text with only a shallow post-generation
+    check). bdd is the one format that still generates real target-format
+    text directly, since Gherkin scenario writing is a genuine generative
+    task, not a structured-data mapping one."""
     session_id = state.get("session_id", "?")
     fmt = state.get("output_format", "testrail")
     is_translation = state.get("workflow_mode") == "format_only"
@@ -613,29 +592,48 @@ async def formatter_node(state: SpecForgeState, config: Optional[dict] = None) -
         "translate" if is_translation else "compile",
     )
 
-    rules = FORMATTER_FORMAT_RULES.get(fmt, FORMATTER_FORMAT_RULES["testrail"])
-    example = few_shot_block(FORMAT_SAMPLE_FILES.get(fmt, FORMAT_SAMPLE_FILES["testrail"]))
+    if fmt == "bdd":
+        rules = FORMATTER_FORMAT_RULES["bdd"]
+        example = few_shot_block(FORMAT_SAMPLE_FILES["bdd"])
+        if is_translation:
+            instructions = TRANSLATE_INSTRUCTION.format(fmt_name="bdd", rules=rules)
+            source = state.get("legacy_test_cases", "")
+            prompt = f"{instructions}\n\n{example}\n\n# Existing test cases\n{source}"
+        else:
+            matrix = [
+                item
+                for item in _coerce_test_matrix(state.get("test_matrix", []))
+                if item.get("included", True)
+            ]
+            instructions = COMPILE_INSTRUCTION.format(fmt_name="bdd", rules=rules)
+            prompt = (
+                f"{instructions}\n\n{example}\n\n# Test matrix (JSON)\n{json.dumps(matrix)}"
+            )
+        model = state.get("formatter_model") or settings.formatter_model
+        output = await ollama_chat(model, prompt)
+        output = _merge_multiple_bdd_features(output)
+        logger.info("[%s] formatter: done (%d chars)", session_id, len(output))
+        return {"formatted_output": output, "stage": "formatter"}
 
     if is_translation:
-        instructions = TRANSLATE_INSTRUCTION.format(fmt_name=fmt, rules=rules)
-        source = state.get("legacy_test_cases", "")
-        prompt = f"{instructions}\n\n{example}\n\n# Existing test cases\n{source}"
-    else:
-        instructions = COMPILE_INSTRUCTION.format(fmt_name=fmt, rules=rules)
+        # No structured test_matrix exists yet for format_only - one LLM call
+        # extracts it from the raw legacy document first, reusing the same
+        # coercion/repair every other structured-output flow in this app
+        # already relies on (ollama_chat's own JSON retry, then _coerce_test_matrix's
+        # never-crash-on-wrong-shape defaults).
+        model = state.get("reasoning_model") or settings.reasoning_model
         prompt = (
-            f"{instructions}\n\n{example}\n\n"
-            f"# Test matrix (JSON)\n{state.get('test_matrix', [])}"
+            f"{EXTRACT_TEST_CASES_JSON_SYSTEM}\n\n"
+            f"# Existing test cases\n{state.get('legacy_test_cases', '')}"
         )
+        result = await ollama_chat(model, prompt, expect_json=True)
+        matrix = _coerce_test_matrix(result.get("test_matrix", []))
+    else:
+        matrix = _coerce_test_matrix(state.get("test_matrix", []))
 
-    model = state.get("formatter_model") or settings.formatter_model
-    output = await ollama_chat(model, prompt)
-
-    if fmt == "jira_xray":
-        output = await _validate_and_repair_json(output, model, prompt)
-    elif fmt in ("qtest", "azure_devops"):
-        output = await _validate_and_repair_csv(output, model, prompt)
-    elif fmt == "bdd":
-        output = _merge_multiple_bdd_features(output)
+    matrix = [item for item in matrix if item.get("included", True)]
+    serializer = _SERIALIZERS.get(fmt, serialize_testrail_csv)
+    output = serializer(matrix)
 
     logger.info("[%s] formatter: done (%d chars)", session_id, len(output))
     return {"formatted_output": output, "stage": "formatter"}

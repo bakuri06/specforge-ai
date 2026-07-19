@@ -16,13 +16,18 @@ class QualityGateFeedback(TypedDict):
 class TestStepDict(TypedDict):
     step_number: int
     action: str
-    expected_result: str
+    data: str
+    result: str
 
 
 class TestMatrixItemDict(TypedDict):
     id: str
     category: Literal["sunny_day", "rainy_day", "boundary", "edge_case"]
     title: str
+    preconditions: str
+    priority: str
+    test_type: str
+    module_or_area_path: str
     steps: list[TestStepDict]
     status: Literal["new", "modified", "broken", "unchanged"]
     included: bool

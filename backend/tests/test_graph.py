@@ -165,7 +165,11 @@ async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
     )
     snapshot = await graph.aget_state(config)
     assert snapshot.next == ()
-    assert snapshot.values["formatted_output"] == "FORMATTED OUTPUT"
+    # Deterministic serialization: testrail compile mode no longer calls the
+    # LLM at all, it serializes the signed-off matrix directly - see
+    # app.services.export_serializers.serialize_testrail_csv.
+    assert "Happy path submission" in snapshot.values["formatted_output"]
+    assert "Concurrent submissions" in snapshot.values["formatted_output"]
     assert snapshot.values["output_format"] == "testrail"
     assert len(snapshot.values["test_matrix"]) == 2
 
@@ -228,7 +232,11 @@ async def test_straight_through_when_spec_and_matrix_are_clean(monkeypatch):
     )
     snapshot = await graph.aget_state(config)
     assert snapshot.next == ()
-    assert snapshot.values["formatted_output"] == "FORMATTED"
+    # qtest compile mode no longer calls the LLM - deterministic serialization.
+    # qTest's real column set has no title/name column at all, so check the
+    # step content instead (see export_serializers.serialize_qtest_csv).
+    assert "Step Description" in snapshot.values["formatted_output"]
+    assert ",1,a,r" in snapshot.values["formatted_output"]
 
 
 async def test_requirement_evaluation_abort_stops_pipeline(monkeypatch):
@@ -426,8 +434,12 @@ async def test_per_session_model_override_is_used_over_settings_default(monkeypa
 
     await graph.ainvoke(initial_state, config=config)
     await _resume_evaluator(config)
+    # output_format="bdd" specifically: bdd is the one format that still
+    # calls the LLM in compile mode (deterministic serialization means the
+    # other 4 formats no longer call formatter_model at all), so this is the
+    # only way left to exercise the formatter_model override end-to-end.
     await graph.ainvoke(
-        Command(resume={"test_matrix": [], "output_format": "testrail"}), config=config
+        Command(resume={"test_matrix": [], "output_format": "bdd"}), config=config
     )
 
     # evaluator, ba_refiner, qa_matrix_builder all use reasoning_model; formatter uses formatter_model
@@ -670,6 +682,91 @@ async def test_flow_c_bdd_output_with_multiple_features_gets_merged_into_one(mon
     assert output.count("Feature:") == 1
     assert "Scenario: Happy path" in output
     assert "Scenario: Bad password" in output
+
+
+async def test_flow_c_format_only_extracts_json_then_deterministically_serializes(monkeypatch):
+    """Deterministic serialization architecture: for non-bdd formats,
+    format_only's LLM call now extracts structured JSON from the legacy
+    document (instead of directly rewriting it as target-format text), and
+    formatter_node serializes that JSON deterministically - proving the new
+    extraction path is actually wired up end-to-end through the real graph."""
+    seen_prompts = []
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        seen_prompts.append(prompt)
+        assert expect_json is True
+        return {
+            "test_matrix": [
+                {
+                    "id": "TC-1",
+                    "category": "sunny_day",
+                    "title": "Old login test case",
+                    "preconditions": "",
+                    "priority": "Medium",
+                    "test_type": "Functional",
+                    "module_or_area_path": "Login",
+                    "steps": [
+                        {"step_number": 1, "action": "Log in", "data": "", "result": "Success"}
+                    ],
+                    "status": "unchanged",
+                    "included": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-flow-c-extraction"
+    config = _config(session_id)
+    initial_state = _initial_state(
+        session_id,
+        "",
+        workflow_mode="format_only",
+        legacy_test_cases="TC-1: Old login test case",
+        output_format="testrail",
+    )
+
+    await graph.ainvoke(initial_state, config=config)
+    snapshot = await graph.aget_state(config)
+
+    assert len(seen_prompts) == 1
+    assert "TC-1: Old login test case" in seen_prompts[0]
+    output = snapshot.values["formatted_output"]
+    assert "Title,Type,Priority,Preconditions,Step Action,Step Expected" in output
+    assert "Old login test case" in output
+    assert "Log in" in output
+
+
+async def test_compile_mode_non_bdd_formats_never_call_the_llm(monkeypatch):
+    """The core architectural guarantee of deterministic serialization: once
+    the test matrix is signed off, qtest/testrail/jira_xray/azure_devops must
+    be built purely from that structured data, with zero additional LLM
+    calls for formatting - only bdd still generates via the LLM."""
+    calls = {"count": 0}
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        calls["count"] += 1
+        if _is_evaluator_prompt(prompt):
+            return {"readiness_score": 95, "evaluation_feedback": {}, "recommended_clarification_rounds": 0}
+        if _is_ba_refiner_prompt(prompt):
+            return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
+        if _is_qa_matrix_prompt(prompt):
+            return {"gaps_found": False, "questions": [], "test_matrix": []}
+        raise AssertionError(f"formatter should not call ollama_chat for this format: {prompt[:80]}")
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    for fmt in ("qtest", "testrail", "jira_xray", "azure_devops"):
+        session_id = f"test-no-llm-{fmt}"
+        config = _config(session_id)
+        await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+        await _resume_evaluator(config)
+        calls_before_formatting = calls["count"]
+        snapshot = await graph.ainvoke(
+            Command(resume={"test_matrix": [], "output_format": fmt}), config=config
+        )
+        assert calls["count"] == calls_before_formatting  # formatter added zero calls
+        assert snapshot["formatted_output"] is not None
 
 
 async def test_refine_only_stops_after_ba_refiner_resolves(monkeypatch):

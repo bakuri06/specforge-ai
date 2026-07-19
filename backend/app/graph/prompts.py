@@ -166,17 +166,39 @@ Respond with ONLY a JSON object, no prose, matching this shape:
   "questions": ["...", "..."],
   "test_matrix": [
     {"id": "TC-1", "category": "sunny_day", "title": "...",
+     "preconditions": "...", "priority": "High", "test_type": "Functional",
+     "module_or_area_path": "...",
      "steps": [
-       {"step_number": 1, "action": "...", "expected_result": "..."},
-       {"step_number": 2, "action": "...", "expected_result": "..."}
+       {"step_number": 1, "action": "...", "data": "...", "result": "..."},
+       {"step_number": 2, "action": "...", "data": "...", "result": "..."}
      ],
      "status": "new", "included": true}
   ]
 }
 
 Each test case's "steps" must be an ORDERED LIST of individual, sequential
-actions with their own expected result — never collapse multiple steps into
-one paragraph, and never omit "steps" in favor of a flat description.
+actions with their own result — never collapse multiple steps into one
+paragraph, and never omit "steps" in favor of a flat description. "data" is
+the concrete test input/parameter value for that step (e.g. an amount, an
+account number, a payload field) — leave it "" only if the step genuinely
+has no distinct input data beyond the action text itself.
+
+"preconditions", "priority", "test_type", and "module_or_area_path" MUST be
+derived from the actual content of the requirements blueprint below — never
+invent generic placeholder values (e.g. always "Medium"/"Functional" on every
+single case regardless of what the blueprint describes):
+- "preconditions": the concrete system/data state that must already be true
+  before step 1 (e.g. "User has $10,000 available balance and no prior
+  transfers today") — "" only if the scenario genuinely needs no setup.
+- "priority": High/Medium/Low, judged by how business-critical this specific
+  scenario is within the blueprint (e.g. a core happy-path money-movement
+  case is typically High; a rarely-hit boundary case is typically Low).
+- "test_type": a real QA classification such as Functional, Integration,
+  Regression, or Smoke, chosen per scenario, not copy-pasted identically
+  across every case.
+- "module_or_area_path": the specific named feature/component area this
+  scenario belongs to, taken from the blueprint's own terminology (e.g.
+  "Account Balance Transfer"), never a generic placeholder like "General".
 
 "category" must be exactly ONE of these four words: sunny_day, rainy_day,
 boundary, edge_case. Never combine multiple values and never include a "|"
@@ -204,16 +226,27 @@ Respond with ONLY a JSON object, no prose, matching this shape:
   "questions": [],
   "test_matrix": [
     {"id": "TC-1", "category": "sunny_day", "title": "...",
+     "preconditions": "...", "priority": "High", "test_type": "Functional",
+     "module_or_area_path": "...",
      "steps": [
-       {"step_number": 1, "action": "...", "expected_result": "..."}
+       {"step_number": 1, "action": "...", "data": "...", "result": "..."}
      ],
      "status": "new", "included": true}
   ]
 }
 
 Each test case's "steps" must be an ORDERED LIST of individual, sequential
-actions with their own expected result — never collapse multiple steps into
-one paragraph.
+actions with their own result — never collapse multiple steps into one
+paragraph. "data" is the concrete test input/parameter value for that step —
+leave it "" only if genuinely not applicable.
+
+"preconditions", "priority", "test_type", and "module_or_area_path" MUST be
+derived from the blueprint's actual content per scenario — never a single
+generic value repeated across every case (see the field-by-field guidance in
+the normal QA matrix prompt: preconditions = required setup state; priority
+= High/Medium/Low by business criticality; test_type = Functional/
+Integration/Regression/Smoke; module_or_area_path = the specific named
+feature area).
 
 "category" must be exactly ONE of these four words: sunny_day, rainy_day,
 boundary, edge_case. Never combine multiple values and never include a "|"
@@ -225,6 +258,18 @@ unchanged.
 QA_MATRIX_SYSTEM = QA_MATRIX_SYSTEM + "\n" + few_shot_block("sample_test_matrix.json")
 
 # --- Phase 4: Agent 3 - Formatter Router -------------------------------------
+#
+# Deterministic serialization architecture: the LLM's only remaining job for
+# non-bdd formats is producing the SAME enriched test-case JSON shape as the
+# QA Matrix Builder above (used in format_only/translate mode, to extract
+# structure from an existing legacy test document) - every format-specific
+# CSV/JSON layout concern lives in app/services/export_serializers.py instead
+# of prompt wording, since prompt-only enforcement already proved unreliable
+# for structural correctness on local 7B models (jira_xray/qtest/azure_devops
+# used to be LLM-written CSV/JSON text with only a shallow post-generation
+# check). bdd is the one format that keeps generating real target-format
+# text directly, since Gherkin scenario writing is a genuine generative task,
+# not a structured-data mapping one.
 
 FORMATTER_FORMAT_RULES = {
     "bdd": (
@@ -236,40 +281,40 @@ FORMATTER_FORMAT_RULES = {
         "the same steps repeat with varying data across scenarios; otherwise "
         "use a plain 'Scenario'."
     ),
-    "testrail": (
-        "Markdown. One heading + table per test case: '## <id>: <title>' followed "
-        "by a table with columns 'Step #', 'Action', 'Expected Result' — one row "
-        "per step."
-    ),
-    "qtest": (
-        "Strict comma-delimited CSV. Columns: Module,Precondition,Type,Priority,"
-        "Step,Step Description,Expected Result. Populate Module/Precondition/Type/"
-        "Priority ONLY on each test case's first step row; leave those four "
-        "columns completely blank on every subsequent step row of the same test "
-        "case, so rows visually group under one scenario. Quote any field "
-        "containing a comma."
-    ),
-    "jira_xray": (
-        'Native Jira/Xray JSON: {"issues": [{"fields": {"summary": "...", '
-        '"issuetype": {"name": "Test"}, "labels": ["<category>"], "priority": '
-        '{"name": "..."}}, "steps": [{"action": "...", "data": "", "result": '
-        '"..."}]}]}. Output ONLY valid JSON, nothing else — no prose, no code '
-        "fences, no <think> reasoning blocks."
-    ),
-    "azure_devops": (
-        "Strict comma-delimited CSV, flat layout (no row-grouping/blanking). "
-        "Columns: Test Case ID,Test Case Title,Step Number,Step Action,Step "
-        "Expected Result — repeat the Test Case ID and Title on every step row. "
-        "Quote any field containing a comma."
-    ),
 }
+
+EXTRACT_TEST_CASES_JSON_SYSTEM = """You are a QA test-case extraction assistant
+extracting structured test cases from an existing test document. Read the document below
+and extract every distinct test case it already contains — do not invent new
+test cases, only structure what is already there.
+
+Respond with ONLY a JSON object, no prose, matching this shape:
+{
+  "test_matrix": [
+    {"id": "TC-1", "category": "sunny_day", "title": "...",
+     "preconditions": "...", "priority": "High", "test_type": "Functional",
+     "module_or_area_path": "...",
+     "steps": [
+       {"step_number": 1, "action": "...", "data": "...", "result": "..."}
+     ],
+     "status": "unchanged", "included": true}
+  ]
+}
+
+Preserve every specific detail already present in the source document
+(numbers, field names, exact wording of actions/expected results) — this is
+extraction, not rewriting. Only fall back to a reasonable inference for
+"preconditions"/"priority"/"test_type"/"module_or_area_path"/"category" if
+the source document doesn't already state them explicitly; never leave any
+of these keys out of the JSON entirely.
+
+"category" must be exactly ONE of: sunny_day, rainy_day, boundary, edge_case.
+"status" should be "unchanged" for every extracted case (this document isn't
+part of a delta analysis).
+"""
 
 FORMAT_SAMPLE_FILES = {
     "bdd": "expected_bdd.feature",
-    "testrail": "expected_testrail.md",
-    "qtest": "expected_qtest.csv",
-    "jira_xray": "expected_jira_xray.json",
-    "azure_devops": "expected_azure_devops.csv",
 }
 
 COMPILE_INSTRUCTION = (

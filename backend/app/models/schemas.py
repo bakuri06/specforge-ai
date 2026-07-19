@@ -15,13 +15,18 @@ class QualityGateFeedback(BaseModel):
 class TestStep(BaseModel):
     step_number: int
     action: str
-    expected_result: str
+    data: str = ""
+    result: str
 
 
 class TestMatrixItem(BaseModel):
     id: str
     category: Literal["sunny_day", "rainy_day", "boundary", "edge_case"]
     title: str
+    preconditions: str = ""
+    priority: str = ""
+    test_type: str = ""
+    module_or_area_path: str = ""
     steps: list[TestStep]
     status: Literal["new", "modified", "broken", "unchanged"] = "new"
     included: bool = True
