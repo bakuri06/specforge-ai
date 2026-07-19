@@ -1,10 +1,10 @@
 import { useState } from 'react'
 
 const QUALITY_GATE_LABELS = {
-  data_and_boundaries: 'Data & Boundaries',
-  integration_and_async_behavior: 'Integration & Async Behavior',
-  network_and_resiliency: 'Network & Resiliency',
-  state_and_lifecycle: 'State & Lifecycle',
+  data_and_boundaries: 'Business Rules & Limits',
+  integration_and_async_behavior: 'System Integrations',
+  network_and_resiliency: 'Error Handling & Resiliency',
+  state_and_lifecycle: 'User Flow & Edge Cases',
 }
 
 export default function EvaluationStep({

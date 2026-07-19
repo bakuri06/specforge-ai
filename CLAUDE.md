@@ -365,6 +365,27 @@ never-crash-on-wrong-shape precedent as `_coerce_test_matrix`'s non-list
 fallback. `EvaluationStep.jsx` renders one labeled group per category instead
 of a single flat bullet list.
 
+The four JSON keys above (`data_and_boundaries` etc.) are internal
+identifiers only — `REQUIREMENT_EVALUATOR_SYSTEM` (`prompts.py`) maps each to
+a plain-English business-testing bucket name for the model to reason and
+write in ("Business Rules & Limits", "System Integrations", "Error Handling
+& Resiliency", "User Flow & Edge Cases" respectively), and `EvaluationStep.jsx`'s
+`QUALITY_GATE_LABELS` uses those same friendly names as the section headings
+— a pure display-string change, not a schema rename, so `state.py`/`schemas.py`/
+`nodes.py` and every existing test are untouched. The prompt also enforces
+two rules directly, since the earlier technical-jargon version produced
+confusing, self-contradictory output (e.g. `readiness_score` docked for a
+category while its gap list stayed empty, or bullets describing things the
+spec already handled correctly): **gap-first reporting** (only list what's
+actually missing/ambiguous/unaddressed — a clean category's list must be
+empty, never padded with restated positives) and **score/gap consistency**
+(every point deducted must be traceable to an explicit bullet somewhere in
+`evaluation_feedback`). Each bullet is required to follow a `"❌ **<gap-type
+label>:** <plain-English description>"` format with two worked bad/good
+examples in the prompt — deliberately banning code-level notation (variable
+names, HTTP status codes) so the output reads like a product consultant's
+note, not an engineer's.
+
 ### "refine_only": stopping after the polished spec
 
 `route_ambiguity` (`nodes.py`) is the only place `refine_only` diverges from

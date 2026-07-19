@@ -47,8 +47,10 @@ async def ollama_chat(
             "explanation. Escape every newline inside a string value as \\n "
             "rather than a literal line break, escape every literal "
             "backslash as \\\\ (e.g. a regex pattern like \\d must be "
-            "written as \\\\d), and do not leave a trailing comma before a "
-            "closing } or ]."
+            "written as \\\\d), escape every literal double-quote inside a "
+            "string value as \\\" (e.g. quoting a status like \"completed\" "
+            "inside a longer sentence must be written as \\\"completed\\\"), "
+            "and do not leave a trailing comma before a closing } or ]."
         )
         retry_content = await _raw_chat(model, corrected_prompt, images, expect_json)
         return _parse_json_with_repair(retry_content)
@@ -120,6 +122,55 @@ def _remove_trailing_commas(text: str) -> str:
     return _TRAILING_COMMA_RE.sub(r"\1", text)
 
 
+_QUOTE_TERMINATOR_LOOKAHEAD_RE = re.compile(r"\s*[:,}\]]")
+
+
+def _fix_unescaped_quotes(text: str) -> str:
+    """Local models routinely quote a term inside a string value with plain
+    double quotes instead of escaping them (e.g. writing the literal prose
+    `the status becomes "completed"` inside a JSON string), which makes
+    json.loads terminate that string early at the first inner quote and then
+    fail on whatever follows with "Expecting ',' delimiter" - a confusing
+    error that never mentions a quote at all.
+
+    Scans character-by-character tracking whether we're inside a string.
+    Already-escaped quotes (\\") are passed through untouched. An unescaped
+    quote hit while inside a string is only treated as the real closing
+    quote if it's immediately followed (after optional whitespace) by a JSON
+    structural character (: , } ]) or the end of the text - otherwise it's
+    an embedded literal quote, so it gets escaped and scanning stays inside
+    the string. This correctly handles a run of multiple embedded quoted
+    terms in one value, since each quote is judged independently by its own
+    lookahead, and only the true terminating quote (followed by real JSON
+    structure) breaks out of the string."""
+    result = []
+    in_string = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and in_string and i + 1 < n:
+            result.append(text[i : i + 2])
+            i += 2
+            continue
+        if ch == '"':
+            if not in_string:
+                in_string = True
+                result.append(ch)
+                i += 1
+                continue
+            lookahead = text[i + 1 :]
+            if lookahead.strip() == "" or _QUOTE_TERMINATOR_LOOKAHEAD_RE.match(lookahead):
+                in_string = False
+                result.append(ch)
+            else:
+                result.append('\\"')
+            i += 1
+            continue
+        result.append(ch)
+        i += 1
+    return "".join(result)
+
+
 def _parse_json_with_repair(content: str) -> dict:
     """Best-effort recovery for common local-model JSON quirks:
 
@@ -132,11 +183,15 @@ def _parse_json_with_repair(content: str) -> dict:
     - A literal backslash inside a string value that isn't a valid JSON
       escape (see _fix_invalid_escapes).
     - A trailing comma before a closing }/] (see _remove_trailing_commas).
+    - A literal, unescaped double-quote inside a string value - e.g. quoting
+      a status literal in prose (see _fix_unescaped_quotes) - which surfaces
+      as a confusing "Expecting ',' delimiter" error that never mentions a
+      quote at all.
 
-    The last two are only ever applied as repairs on top of a failed parse,
-    never on the happy path, since rewriting content always carries some risk
-    of changing meaning (however small) — the straightforward parse is always
-    tried first, per candidate, before any repair.
+    The last three are only ever applied as repairs on top of a failed
+    parse, never on the happy path, since rewriting content always carries
+    some risk of changing meaning (however small) — the straightforward
+    parse is always tried first, per candidate, before any repair.
     """
     content = _THINK_BLOCK_RE.sub("", content).strip()
 
@@ -149,7 +204,11 @@ def _parse_json_with_repair(content: str) -> dict:
         lambda text: text,
         _fix_invalid_escapes,
         _remove_trailing_commas,
+        _fix_unescaped_quotes,
         lambda text: _remove_trailing_commas(_fix_invalid_escapes(text)),
+        lambda text: _fix_unescaped_quotes(_fix_invalid_escapes(text)),
+        lambda text: _remove_trailing_commas(_fix_unescaped_quotes(text)),
+        lambda text: _remove_trailing_commas(_fix_unescaped_quotes(_fix_invalid_escapes(text))),
     )
 
     last_error: Optional[json.JSONDecodeError] = None
