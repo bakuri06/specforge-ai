@@ -72,7 +72,15 @@ async def _to_response(session_id: str) -> SessionStateResponse:
 
 
 async def _save_upload(upload: UploadFile, upload_dir: str) -> str:
-    dest = os.path.join(upload_dir, upload.filename)
+    # Prefix with a per-upload UUID so two files sharing a name (e.g.
+    # clipboard-pasted screenshots both called "image.png") don't overwrite
+    # each other on disk. This matters more for images than text/CSV: those
+    # are read back immediately via _extract_text in the same request, but
+    # image_paths are only read later at graph-execution time (ingest_visual_node),
+    # by which point every upload in the batch has already been saved - a
+    # collision would silently make two image_paths entries point at
+    # whichever image was written last.
+    dest = os.path.join(upload_dir, f"{uuid.uuid4().hex}_{upload.filename}")
     content = await upload.read()
     with open(dest, "wb") as out:
         out.write(content)

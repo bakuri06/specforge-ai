@@ -103,6 +103,36 @@ def test_format_only_rejects_missing_legacy_test_cases(monkeypatch):
     assert fake_graph.state is None
 
 
+def test_same_named_image_uploads_do_not_overwrite_each_other_on_disk(monkeypatch):
+    """Two screenshots sharing a filename (common for clipboard-pasted
+    images, e.g. both called "image.png") must not collide on disk. image_paths
+    is only read later at graph-execution time (ingest_visual_node), by which
+    point every upload in the batch has already been saved - a filename
+    collision would silently make both image_paths entries point at whichever
+    image was written last, so one screenshot's "analysis" would actually
+    describe the other, wrong screenshot."""
+    fake_graph = _FakeGraph()
+    monkeypatch.setattr(session_module, "graph", fake_graph)
+
+    response = client.post(
+        "/api/sessions/",
+        data={"text": "Some requirements"},
+        files=[
+            ("files", ("image.png", io.BytesIO(b"FIRST-IMAGE-BYTES"), "image/png")),
+            ("files", ("image.png", io.BytesIO(b"SECOND-IMAGE-BYTES"), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 200
+    image_paths = fake_graph.state["image_paths"]
+    assert len(image_paths) == 2
+    assert image_paths[0] != image_paths[1]
+    with open(image_paths[0], "rb") as f:
+        assert f.read() == b"FIRST-IMAGE-BYTES"
+    with open(image_paths[1], "rb") as f:
+        assert f.read() == b"SECOND-IMAGE-BYTES"
+
+
 def test_start_session_rejects_invalid_workflow_mode(monkeypatch):
     fake_graph = _FakeGraph()
     monkeypatch.setattr(session_module, "graph", fake_graph)

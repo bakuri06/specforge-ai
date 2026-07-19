@@ -357,7 +357,21 @@ PDFs and CSVs are extracted to text synchronously via
 `app/services/file_parser.py` before the graph ever runs; images (only valid
 in `files[]`) are saved to `storage/<session_id>/` and passed as `image_paths`
 into the initial state, to be read and base64-encoded by the vision node at
-graph-execution time. `start_session` also accepts `workflow_mode`,
+graph-execution time. `_save_upload` prefixes every saved filename with a
+fresh `uuid4().hex` rather than writing directly to `upload.filename` — two
+screenshots sharing a name (routine for clipboard-pasted images, e.g. both
+literally `image.png`) used to silently overwrite each other on disk. This
+mattered specifically for images and not PDFs/CSVs/legacy files: those are
+read back via `_extract_text` synchronously, in the same loop iteration as
+the save, so a same-named *later* upload in the batch can't clobber an
+*earlier* one before it's been read; `image_paths` is only read much later at
+graph-execution time in `ingest_visual_node`, by which point every upload in
+the request has already been saved, so a collision meant both `image_paths`
+entries pointed at whichever image happened to be written last — the vision
+model would then analyze the same (wrong) screenshot twice, surfacing as
+plausible-looking but incorrect per-image analysis rather than a crash. See
+`test_same_named_image_uploads_do_not_overwrite_each_other_on_disk` in
+`test_session_router.py`. `start_session` also accepts `workflow_mode`,
 `out_of_scope_details`, and (Flow C only) an upfront `output_format` field —
 the last one means Flow C's very first response already has `output_format`
 populated, unlike Flows A/B where it stays `None` until checklist sign-off.
