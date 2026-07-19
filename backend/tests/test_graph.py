@@ -622,6 +622,92 @@ async def test_flow_c_format_only_reaches_formatter_directly(monkeypatch):
     assert "TC-1: Old login test case" in seen_prompts[0]
 
 
+async def test_refine_only_stops_after_ba_refiner_resolves(monkeypatch):
+    """refine_only shares the full path through requirement_evaluator and
+    ba_refiner (including the clarification loop), then must stop at the
+    polished spec instead of continuing into qa_matrix_builder."""
+    qa_calls = {"count": 0}
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 80,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if _is_ba_refiner_prompt(prompt):
+            return {
+                "ambiguous": False,
+                "questions": [],
+                "polished_spec": "## Input Validation\nDone.",
+            }
+        if _is_qa_matrix_prompt(prompt):
+            qa_calls["count"] += 1
+            return {"gaps_found": False, "questions": [], "test_matrix": []}
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-refine-only"
+    config = _config(session_id)
+
+    await graph.ainvoke(
+        _initial_state(session_id, "Some requirements.", workflow_mode="refine_only"),
+        config=config,
+    )
+    await _resume_evaluator(config)
+
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ()
+    assert snapshot.values["ambiguity_resolved"] is True
+    assert snapshot.values["polished_spec"] == "## Input Validation\nDone."
+    assert snapshot.values.get("test_matrix", []) == []
+    assert snapshot.values.get("formatted_output") is None
+    assert qa_calls["count"] == 0  # qa_matrix_builder must never run
+
+
+async def test_refine_only_still_runs_the_ba_clarification_loop(monkeypatch):
+    """refine_only isn't a shortcut around clarification - it just stops
+    afterward instead of continuing to the QA matrix builder."""
+    ba_calls = {"count": 0}
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 40,
+                "evaluation_feedback": ["Too vague"],
+                "recommended_clarification_rounds": 1,
+            }
+        if _is_ba_refiner_prompt(prompt):
+            ba_calls["count"] += 1
+            if ba_calls["count"] == 1:
+                return {
+                    "ambiguous": True,
+                    "questions": ["What is the retry policy?"],
+                    "polished_spec": "",
+                }
+            return {"ambiguous": False, "questions": [], "polished_spec": "Resolved spec"}
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-refine-only-loop"
+    config = _config(session_id)
+
+    await graph.ainvoke(
+        _initial_state(session_id, "Vague.", workflow_mode="refine_only"), config=config
+    )
+    await _resume_evaluator(config)
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("ba_clarification",)
+
+    await graph.ainvoke(Command(resume=["Retries twice with backoff."]), config=config)
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ()
+    assert snapshot.values["polished_spec"] == "Resolved spec"
+    assert ba_calls["count"] == 2
+
+
 def test_route_entry_and_route_after_ingest_default_to_full_on_bad_workflow_mode():
     assert nodes_module.route_entry({}) == "ingest"
     assert nodes_module.route_entry({"workflow_mode": "bogus"}) == "ingest"
@@ -630,3 +716,20 @@ def test_route_entry_and_route_after_ingest_default_to_full_on_bad_workflow_mode
     assert nodes_module.route_after_ingest({}) == "full"
     assert nodes_module.route_after_ingest({"workflow_mode": "bogus"}) == "full"
     assert nodes_module.route_after_ingest({"workflow_mode": "qa_direct"}) == "qa_direct"
+
+
+def test_route_ambiguity_stops_only_for_refine_only():
+    assert nodes_module.route_ambiguity({"ambiguity_resolved": False}) == "clarify"
+    assert (
+        nodes_module.route_ambiguity({"ambiguity_resolved": False, "workflow_mode": "refine_only"})
+        == "clarify"
+    )
+    assert nodes_module.route_ambiguity({"ambiguity_resolved": True}) == "resolved"
+    assert (
+        nodes_module.route_ambiguity({"ambiguity_resolved": True, "workflow_mode": "full"})
+        == "resolved"
+    )
+    assert (
+        nodes_module.route_ambiguity({"ambiguity_resolved": True, "workflow_mode": "refine_only"})
+        == "stop"
+    )

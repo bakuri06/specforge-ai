@@ -21,6 +21,8 @@ export async function startSession({
   visionModel,
   reasoningModel,
   formatterModel,
+  workflowMode,
+  outOfScopeDetails,
 }) {
   const formData = new FormData()
   formData.append('text', text)
@@ -30,6 +32,8 @@ export async function startSession({
   if (visionModel) formData.append('vision_model', visionModel)
   if (reasoningModel) formData.append('reasoning_model', reasoningModel)
   if (formatterModel) formData.append('formatter_model', formatterModel)
+  if (workflowMode) formData.append('workflow_mode', workflowMode)
+  if (outOfScopeDetails) formData.append('out_of_scope_details', outOfScopeDetails)
 
   const response = await fetch(`${API_BASE_URL}/api/sessions/`, {
     method: 'POST',

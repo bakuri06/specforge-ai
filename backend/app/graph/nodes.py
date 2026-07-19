@@ -399,7 +399,11 @@ async def ba_clarification_node(state: SpecForgeState, config: Optional[dict] = 
 
 
 def route_ambiguity(state: SpecForgeState) -> str:
-    return "resolved" if state.get("ambiguity_resolved") else "clarify"
+    if not state.get("ambiguity_resolved"):
+        return "clarify"
+    # "refine_only" stops here instead of continuing into the QA matrix
+    # builder - the polished_spec itself is the deliverable for this flow.
+    return "stop" if state.get("workflow_mode") == "refine_only" else "resolved"
 
 
 # --- Phase 3: Agent 2 - QA Test Matrix Builder -------------------------------

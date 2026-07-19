@@ -6,6 +6,7 @@ import ClarificationStep from './components/ClarificationStep.jsx'
 import ChecklistEditor from './components/ChecklistEditor.jsx'
 import ExportStep from './components/ExportStep.jsx'
 import PolishedSpecPanel from './components/PolishedSpecPanel.jsx'
+import RefineOnlyDoneStep from './components/RefineOnlyDoneStep.jsx'
 import {
   startSession,
   submitEvaluationDecision,
@@ -19,6 +20,9 @@ function stepKeyFor(session) {
   if (!session) return 'upload'
   if (session.workflow_aborted) return 'aborted'
   if (session.formatted_output) return 'export'
+  if (session.workflow_mode === 'refine_only' && session.polished_spec && !session.awaiting_input) {
+    return 'refined'
+  }
   if (session.awaiting_input === 'requirement_evaluation') return 'evaluate'
   if (session.awaiting_input === 'ba_clarification') return 'refine'
   return 'matrix'
@@ -141,6 +145,10 @@ export default function App() {
               onSubmit={handleChecklistSubmit}
               submitting={busy}
             />
+          )}
+
+          {stepKey === 'refined' && session && (
+            <RefineOnlyDoneStep polishedSpec={session.polished_spec} onRestart={handleRestart} />
           )}
 
           {stepKey === 'export' && session && (

@@ -31,7 +31,7 @@ class SessionStateResponse(BaseModel):
             "checklist_signoff",
         ]
     ] = None
-    workflow_mode: Optional[Literal["full", "qa_direct", "format_only"]] = None
+    workflow_mode: Optional[Literal["full", "qa_direct", "format_only", "refine_only"]] = None
     workflow_aborted: bool = False
     out_of_scope_details: Optional[str] = None
     readiness_score: Optional[int] = None

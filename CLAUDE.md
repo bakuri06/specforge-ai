@@ -10,15 +10,20 @@ export-ready test artifacts (BDD/Gherkin, TestRail Markdown, qTest CSV,
 Jira/Xray JSON, Azure DevOps CSV), running entirely against local Ollama
 models. Backend is FastAPI + LangGraph (`backend/`); frontend is a
 React/Vite/Tailwind wizard (`frontend/`), including the requirement-evaluation
-step and hierarchical test-step editing (see "Known gaps" for what's still
-Flow-A-only in the UI: no `workflow_mode`/`out_of_scope_details` selection
-yet, so Flows B/C can only be driven via the API directly).
+step, hierarchical test-step editing, and a `workflow_mode`/`out_of_scope_details`
+picker on the Upload step (see "Known gaps" for the one flow still API-only).
 
-The graph supports three independent entry points (`workflow_mode`), not just
+The graph supports four independent entry points (`workflow_mode`), not just
 one linear pipeline:
 - **Flow A ("full")**: raw requirements -> BA refiner -> QA matrix builder ->
-  formatter. The only flow with a requirement-evaluation gate and BA
-  clarification loop.
+  formatter. The only flows with a requirement-evaluation gate and BA
+  clarification loop are this one and "refine_only" below (they share the
+  same path up through the BA refiner).
+- **"refine_only"**: identical path to Flow A through ingestion, the
+  evaluation gate, and the BA refiner (including its clarification loop) —
+  but stops there instead of continuing into the QA matrix builder. The
+  polished spec itself is the deliverable; there's no test matrix, checklist
+  sign-off, or formatter step for this flow at all.
 - **Flow B ("qa_direct")**: caller supplies already-refined requirements
   directly into `polished_spec`, bypassing the BA refiner entirely, and enters
   at the QA matrix builder.
@@ -78,6 +83,8 @@ Flow A (full):
              --> deepseek-r1:7b     Agent 2: QA Test Matrix Builder (+ gap clarifier loop)
              --> qwen2.5:7b         Agent 3: Formatter Router (BDD/TestRail/qTest/Jira-Xray/Azure DevOps)
 
+refine_only: same path as Flow A through the BA refiner, then stops — no
+             Agent 2, no Agent 3, no checklist sign-off.
 Flow B (qa_direct):  [Pre-refined text] --> polished_spec --> Agent 2 --> Agent 3
 Flow C (format_only): [Legacy test cases] --> Agent 3 (translate mode, no BA/QA, no interrupts)
 ```
@@ -166,7 +173,8 @@ requirement_evaluator -> evaluation_review (interrupt)
 evaluation_review --route_after_evaluation--> ba_refiner   [proceed]
                                             -> END          [abort]
 
-ba_refiner --route_ambiguity--> qa_matrix_builder | ba_clarification
+ba_refiner --route_ambiguity--> qa_matrix_builder | ba_clarification | END
+                                [resolved, full]    [clarify]           [resolved, refine_only]
 ba_clarification -> ba_refiner   (loop back)
 
 qa_matrix_builder --route_gaps--> checklist_signoff | gap_clarification
@@ -270,7 +278,7 @@ ends with `snapshot.next == ()`, structurally identical to a normally
 `workflow_aborted: bool` in state instead, echoed straight through in
 `SessionStateResponse.workflow_aborted`, which is the only reliable signal.
 
-### Requirement Evaluation Gate (Flow A only)
+### Requirement Evaluation Gate (Flow A and refine_only)
 
 `requirement_evaluator_node` scores raw-requirements completeness (0-100),
 lists qualitative gaps, and recommends a clarification-round count — explicitly
@@ -285,6 +293,43 @@ constant directly; Flows B/C never populate that key (they skip the evaluator
 entirely) and correctly fall back to the module constant. The QA matrix
 builder's gap-loop cap is untouched by any of this — it's out of scope for the
 evaluator, which is specifically "immediately after ingestion in System 1."
+
+### "refine_only": stopping after the polished spec
+
+`route_ambiguity` (`nodes.py`) is the only place `refine_only` diverges from
+Flow A: once `ambiguity_resolved` is true, it returns `"stop"` instead of
+`"resolved"` when `state.get("workflow_mode") == "refine_only"`, which
+`build.py` maps to `END` in `ba_refiner`'s conditional-edge `path_map`
+(`{"resolved": "qa_matrix_builder", "clarify": "ba_clarification", "stop": END}`).
+Everything upstream of that check — ingestion, the evaluation gate, the BA
+clarification loop itself — is unchanged Flow A code; `refine_only` isn't a
+shortcut around clarification, it just declines to continue past the refiner
+once resolved. `qa_matrix_builder` is never invoked for this flow (see
+`test_refine_only_stops_after_ba_refiner_resolves` in `test_graph.py`, which
+asserts on a call counter rather than just on `snapshot.next`). On the
+frontend, `App.jsx`'s `stepKeyFor` routes to a terminal `RefineOnlyDoneStep.jsx`
+when `workflow_mode === "refine_only"` and `polished_spec` is set with no
+`awaiting_input` pending; that component reuses the existing
+`PolishedSpecPanel.jsx` display (already rendered unconditionally whenever
+`polished_spec` is present) and adds a client-side Blob download of the spec
+as `.md` — no backend endpoint needed since the spec is already in the
+session response.
+
+Adding `refine_only` to `state.py`'s/`nodes.py`'s/`build.py`'s
+`workflow_mode` Literal wasn't sufficient by itself — a live smoke test (fake
+Ollama server + real uvicorn, not just the mocked-`ollama_chat` graph tests)
+caught `SessionStateResponse.workflow_mode` in `schemas.py` still pinned to
+the old 3-value Literal, which made pydantic reject the very first response
+for any `refine_only` session with a `literal_error` inside `_to_response`.
+`test_graph.py` never catches this class of bug since it drives the graph
+directly and never constructs a `SessionStateResponse`; the regression test
+is `test_refine_only_flow_reaches_polished_spec_through_the_real_router` in
+`test_session_router.py`, which goes through the real FastAPI app (like
+`test_malformed_model_output_does_not_crash_response_construction` does) for
+exactly this reason. Any future `workflow_mode` value must be added in all
+three places (`state.py`, `session.py`'s `VALID_WORKFLOW_MODES`, and
+`schemas.py`'s `SessionStateResponse.workflow_mode`) — there's no single
+source of truth for this Literal today.
 
 ### Hierarchical test steps
 
@@ -401,11 +446,29 @@ that way server-side) and `awaiting_input === "requirement_evaluation"`
 shape (per-scenario add/edit/remove step rows instead of one flat
 `description` textarea) and the 5-format dropdown.
 
-**Still Flow-A-only in the UI** — Flows B/C exist and are fully functional
-via the API (see `test_session_router.py`'s `qa_direct`/`format_only` tests),
-but nothing in `UploadStep.jsx` lets a user pick `workflow_mode`, set
-`out_of_scope_details`, or (Flow C) choose the target format upfront. A
-session started from the current UI is always `workflow_mode: "full"`.
+`UploadStep.jsx` now has a 3-option `workflow_mode` picker (`full`/
+`refine_only`/`qa_direct`, each a radio-styled card) plus an
+`out_of_scope_details` textarea (hidden for `qa_direct`, since that flow skips
+the evaluator entirely) — `client.js`'s `startSession` forwards both as
+`workflow_mode`/`out_of_scope_details` form fields. Field visibility/labels
+adapt per mode: the requirements textarea is relabeled "Already-refined
+requirements" for `qa_direct`, and the legacy-test-cases section is hidden
+entirely for `refine_only` (irrelevant to a flow that never reaches the QA
+matrix builder). `stepKeyFor` gains a `refined` branch — checked before the
+`requirement_evaluation`/`ba_clarification` branches since a completed
+`refine_only` session also has `polished_spec` set with no `awaiting_input`,
+which would otherwise fall through to the same default `'matrix'` bucket a
+normal Flow A completion does — rendering `RefineOnlyDoneStep.jsx` instead.
+`WizardStepper.jsx`'s `STEPS` array doesn't have a `refined` entry, so (like
+the existing `aborted` step) it renders with no step highlighted — an
+accepted, pre-existing pattern for terminal states that aren't part of the
+main A/B/C linear stepper.
+
+**Still API-only**: Flow C (`format_only`) — it's fully functional via the
+API (see `test_session_router.py`'s `format_only` tests), but nothing in
+`UploadStep.jsx` lets a user pick it or choose its upfront target format; it
+wasn't part of the ask that added the `workflow_mode` picker, only
+`full`/`refine_only`/`qa_direct` were.
 
 See README.md's Troubleshooting section for real environment issues hit
 during setup (macOS system-Python contamination causing a LangGraph
@@ -427,5 +490,6 @@ report is something novel in the code.
 - No automated frontend tests. Backend tests cover the graph's routing/loop
   logic and the health check, but not the FastAPI routes themselves
   (`routers/session.py`) or the file parsers.
-- No UI for Flows B/C's entry parameters (`workflow_mode`, `out_of_scope_details`,
-  Flow C's upfront format picker) — see "Frontend state machine" above.
+- No UI for Flow C's entry parameters (`workflow_mode: "format_only"` and its
+  upfront format picker) — see "Frontend state machine" above. Full,
+  refine_only, and qa_direct all have UI now.

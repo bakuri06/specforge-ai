@@ -24,12 +24,14 @@ class TestMatrixItemDict(TypedDict):
 class SpecForgeState(TypedDict, total=False):
     session_id: str
 
-    # Multi-entry routing: which of the three user journeys this session is
-    # running (see build.py's route_entry/route_after_ingest). Defaults to
-    # "full" if absent - both routers treat any missing/unrecognized value
-    # as "full" rather than raising, matching the rest of the codebase's
-    # "never trust raw input at a decision point" convention.
-    workflow_mode: Literal["full", "qa_direct", "format_only"]
+    # Multi-entry routing: which of the four user journeys this session is
+    # running (see build.py's route_entry/route_after_ingest/route_ambiguity).
+    # Defaults to "full" if absent - all routers treat any missing/
+    # unrecognized value as "full" rather than raising, matching the rest of
+    # the codebase's "never trust raw input at a decision point" convention.
+    # "refine_only" runs the same path as "full" through the BA refiner, then
+    # stops there instead of continuing into the QA matrix builder.
+    workflow_mode: Literal["full", "qa_direct", "format_only", "refine_only"]
 
     # Per-session model selection (falls back to app.config.settings defaults
     # when not provided at session start)

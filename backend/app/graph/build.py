@@ -18,10 +18,13 @@ def build_graph():
     workflow.add_node("checklist_signoff", nodes.checklist_signoff_node)
     workflow.add_node("formatter", nodes.formatter_node)
 
-    # Multi-entry routing: Flow A ("full") and Flow B ("qa_direct") both
-    # ingest first (so uploaded screenshots are never silently dropped for
-    # Flow B), then diverge; Flow C ("format_only") skips straight to the
-    # formatter with no BA/QA agents involved at all.
+    # Multi-entry routing: "full", "refine_only", and "qa_direct" all ingest
+    # first (so uploaded screenshots are never silently dropped), then
+    # diverge; "format_only" skips straight to the formatter with no BA/QA
+    # agents involved at all. "refine_only" shares "full"'s exact path
+    # through the BA refiner and only diverges afterward (see
+    # route_ambiguity's "stop" branch below) instead of needing its own
+    # entry branch here.
     workflow.add_conditional_edges(
         START,
         nodes.route_entry,
@@ -43,7 +46,7 @@ def build_graph():
     workflow.add_conditional_edges(
         "ba_refiner",
         nodes.route_ambiguity,
-        {"resolved": "qa_matrix_builder", "clarify": "ba_clarification"},
+        {"resolved": "qa_matrix_builder", "clarify": "ba_clarification", "stop": END},
     )
     workflow.add_edge("ba_clarification", "ba_refiner")
 

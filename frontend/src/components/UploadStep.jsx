@@ -9,8 +9,28 @@ const MODEL_LABELS = {
   formatterModel: 'Formatter model (export compiler)',
 }
 
+const WORKFLOW_MODES = [
+  {
+    value: 'full',
+    label: 'Full pipeline',
+    description: 'Refine requirements, then generate a QA test matrix from them.',
+  },
+  {
+    value: 'refine_only',
+    label: 'Just refine requirements',
+    description: 'Stop after the polished spec — no test matrix generated.',
+  },
+  {
+    value: 'qa_direct',
+    label: 'Just write test cases',
+    description: 'Skip refinement — build the test matrix straight from already-refined requirements.',
+  },
+]
+
 export default function UploadStep({ onSubmit, submitting, error }) {
+  const [workflowMode, setWorkflowMode] = useState('full')
   const [text, setText] = useState('')
+  const [outOfScopeDetails, setOutOfScopeDetails] = useState('')
   const [legacyTestCases, setLegacyTestCases] = useState('')
   const [files, setFiles] = useState([])
   const [legacyFiles, setLegacyFiles] = useState([])
@@ -55,17 +75,51 @@ export default function UploadStep({ onSubmit, submitting, error }) {
     event.preventDefault()
     onSubmit({
       text,
-      legacyTestCases,
+      legacyTestCases: workflowMode === 'refine_only' ? '' : legacyTestCases,
       files,
-      legacyFiles,
+      legacyFiles: workflowMode === 'refine_only' ? [] : legacyFiles,
       visionModel,
       reasoningModel,
       formatterModel,
+      workflowMode,
+      outOfScopeDetails: workflowMode === 'qa_direct' ? '' : outOfScopeDetails,
     })
   }
 
+  const isQaDirect = workflowMode === 'qa_direct'
+  const isRefineOnly = workflowMode === 'refine_only'
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          What do you need?
+        </label>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {WORKFLOW_MODES.map((mode) => (
+            <label
+              key={mode.value}
+              className={`cursor-pointer rounded-lg border p-3 text-sm transition ${
+                workflowMode === mode.value
+                  ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500'
+                  : 'border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name="workflowMode"
+                value={mode.value}
+                checked={workflowMode === mode.value}
+                onChange={(event) => setWorkflowMode(event.target.value)}
+                className="sr-only"
+              />
+              <span className="block font-semibold text-slate-800">{mode.label}</span>
+              <span className="mt-1 block text-xs text-slate-500">{mode.description}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
       {textModels && (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <div className="mb-2 flex items-center justify-between">
@@ -111,13 +165,17 @@ export default function UploadStep({ onSubmit, submitting, error }) {
 
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1">
-          Requirements (paste text)
+          {isQaDirect ? 'Already-refined requirements (paste text)' : 'Requirements (paste text)'}
         </label>
         <textarea
           value={text}
           onChange={(event) => setText(event.target.value)}
           rows={8}
-          placeholder="Paste raw requirements, user stories, or a feature description..."
+          placeholder={
+            isQaDirect
+              ? 'Paste the polished/finalized requirements to build a test matrix from...'
+              : 'Paste raw requirements, user stories, or a feature description...'
+          }
           className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
         />
       </div>
@@ -141,33 +199,50 @@ export default function UploadStep({ onSubmit, submitting, error }) {
         )}
       </div>
 
-      <div>
-        <label className="block text-sm font-medium text-slate-700 mb-1">
-          Legacy test cases (optional, paste or leave blank)
-        </label>
-        <textarea
-          value={legacyTestCases}
-          onChange={(event) => setLegacyTestCases(event.target.value)}
-          rows={5}
-          placeholder="Paste existing test cases to run delta analysis against..."
-          className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
-        />
-        <p className="mt-2 text-xs text-slate-500">Or upload a legacy CSV suite:</p>
-        <input
-          type="file"
-          multiple
-          accept=".csv,text/csv"
-          onChange={(event) => setLegacyFiles(Array.from(event.target.files))}
-          className="mt-1 block w-full text-sm text-slate-600"
-        />
-        {legacyFiles.length > 0 && (
-          <ul className="mt-2 text-xs text-slate-500 list-disc list-inside">
-            {legacyFiles.map((file) => (
-              <li key={file.name}>{file.name}</li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {!isQaDirect && (
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">
+            Out of scope (optional)
+          </label>
+          <textarea
+            value={outOfScopeDetails}
+            onChange={(event) => setOutOfScopeDetails(event.target.value)}
+            rows={3}
+            placeholder="Anything the readiness check should ignore — e.g. features explicitly deferred to a later phase..."
+            className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
+          />
+        </div>
+      )}
+
+      {!isRefineOnly && (
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">
+            Legacy test cases (optional, paste or leave blank)
+          </label>
+          <textarea
+            value={legacyTestCases}
+            onChange={(event) => setLegacyTestCases(event.target.value)}
+            rows={5}
+            placeholder="Paste existing test cases to run delta analysis against..."
+            className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
+          />
+          <p className="mt-2 text-xs text-slate-500">Or upload a legacy CSV suite:</p>
+          <input
+            type="file"
+            multiple
+            accept=".csv,text/csv"
+            onChange={(event) => setLegacyFiles(Array.from(event.target.files))}
+            className="mt-1 block w-full text-sm text-slate-600"
+          />
+          {legacyFiles.length > 0 && (
+            <ul className="mt-2 text-xs text-slate-500 list-disc list-inside">
+              {legacyFiles.map((file) => (
+                <li key={file.name}>{file.name}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -176,7 +251,13 @@ export default function UploadStep({ onSubmit, submitting, error }) {
         disabled={submitting}
         className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
       >
-        {submitting ? 'Analyzing...' : 'Analyze Requirements'}
+        {submitting
+          ? 'Analyzing...'
+          : isQaDirect
+            ? 'Build Test Matrix'
+            : isRefineOnly
+              ? 'Refine Requirements'
+              : 'Analyze Requirements'}
       </button>
     </form>
   )

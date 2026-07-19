@@ -26,7 +26,7 @@ _AWAITING_BY_NEXT_NODE = {
     "checklist_signoff": "checklist_signoff",
 }
 
-VALID_WORKFLOW_MODES = {"full", "qa_direct", "format_only"}
+VALID_WORKFLOW_MODES = {"full", "qa_direct", "format_only", "refine_only"}
 VALID_OUTPUT_FORMATS = {"bdd", "testrail", "qtest", "jira_xray", "azure_devops"}
 
 

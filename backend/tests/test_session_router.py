@@ -223,6 +223,50 @@ def test_malformed_model_output_does_not_crash_response_construction(monkeypatch
     assert body["test_matrix"][0]["status"] == "new"
 
 
+def test_refine_only_flow_reaches_polished_spec_through_the_real_router(monkeypatch):
+    """End-to-end regression for a real bug caught during manual smoke
+    testing: SessionStateResponse.workflow_mode's Literal was never widened
+    to include "refine_only" when the 4th workflow_mode was added to
+    state.py/nodes.py/build.py, so pydantic raised a ValidationError on the
+    very first response for any refine_only session - the graph-level tests
+    in test_graph.py never catch this since they never construct a
+    SessionStateResponse at all."""
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "recommended_clarification_rounds" in prompt:
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if "senior Business Analyst" in prompt:
+            return {"ambiguous": False, "questions": [], "polished_spec": "Refined spec"}
+        return "UNUSED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    start_response = client.post(
+        "/api/sessions/",
+        data={"text": "Some requirements", "workflow_mode": "refine_only"},
+    )
+    assert start_response.status_code == 200
+    start_body = start_response.json()
+    assert start_body["workflow_mode"] == "refine_only"
+    assert start_body["awaiting_input"] == "requirement_evaluation"
+
+    response = client.post(
+        f"/api/sessions/{start_body['session_id']}/evaluation-decision",
+        json={"action": "proceed"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["awaiting_input"] is None
+    assert body["polished_spec"] == "Refined spec"
+    assert body["test_matrix"] == []
+    assert body["formatted_output"] is None
+
+
 def test_ollama_timeout_returns_helpful_504_not_bare_500(monkeypatch):
     class _TimeoutGraph(_FakeGraph):
         async def ainvoke(self, payload, config):
