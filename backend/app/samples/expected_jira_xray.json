@@ -1,0 +1,41 @@
+{
+  "issues": [
+    {
+      "fields": {
+        "summary": "Transfer within daily limit succeeds",
+        "issuetype": { "name": "Test" },
+        "labels": ["sunny_day"],
+        "priority": { "name": "High" }
+      },
+      "steps": [
+        { "action": "Log in as a user with $10,000 available balance and no prior transfers today", "data": "", "result": "User is on the Transfer Money screen" },
+        { "action": "Enter recipient account and amount $500, submit", "data": "", "result": "Transfer is created with status 'pending', then transitions to 'processing'" },
+        { "action": "Wait for Ledger Service confirmation", "data": "", "result": "Transfer status becomes 'completed' and sender balance decreases by $500" }
+      ]
+    },
+    {
+      "fields": {
+        "summary": "Transfer exceeding daily limit is rejected",
+        "issuetype": { "name": "Test" },
+        "labels": ["boundary"],
+        "priority": { "name": "Medium" }
+      },
+      "steps": [
+        { "action": "Log in as a user who has already transferred $4,800 today", "data": "", "result": "User is on the Transfer Money screen" },
+        { "action": "Enter a transfer amount of $300, submit", "data": "", "result": "System rejects the transfer with a 'daily limit exceeded' error before any ledger call is made, sender balance is unchanged" }
+      ]
+    },
+    {
+      "fields": {
+        "summary": "Ledger Service timeout marks transfer as failed",
+        "issuetype": { "name": "Test" },
+        "labels": ["rainy_day"],
+        "priority": { "name": "High" }
+      },
+      "steps": [
+        { "action": "Log in and submit a valid transfer of $200 while the Ledger Service is simulated to not respond", "data": "", "result": "Transfer is created with status 'pending' then 'processing'" },
+        { "action": "Wait 10+ seconds for the Ledger Service call to time out", "data": "", "result": "Transfer status becomes 'failed', held sender balance is released, and the user sees a retryable error message" }
+      ]
+    }
+  ]
+}

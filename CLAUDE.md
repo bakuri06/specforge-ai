@@ -6,9 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SpecForge AI: a LangGraph-orchestrated pipeline that turns raw requirements
 (text/PDF/CSV/screenshots) into a polished spec, a QA test strategy matrix, and
-export-ready test artifacts (TestRail Markdown, qTest CSV, Playwright TS), running
-entirely against local Ollama models. Backend is FastAPI + LangGraph
-(`backend/`); frontend is a React/Vite/Tailwind wizard (`frontend/`).
+export-ready test artifacts (BDD/Gherkin, TestRail Markdown, qTest CSV,
+Jira/Xray JSON, Azure DevOps CSV), running entirely against local Ollama
+models. Backend is FastAPI + LangGraph (`backend/`); frontend is a
+React/Vite/Tailwind wizard (`frontend/`) — **the frontend has not been updated
+for the multi-entry/evaluation-gate/hierarchical-steps changes below; see
+"Known gaps."**
+
+The graph supports three independent entry points (`workflow_mode`), not just
+one linear pipeline:
+- **Flow A ("full")**: raw requirements -> BA refiner -> QA matrix builder ->
+  formatter. The only flow with a requirement-evaluation gate and BA
+  clarification loop.
+- **Flow B ("qa_direct")**: caller supplies already-refined requirements
+  directly into `polished_spec`, bypassing the BA refiner entirely, and enters
+  at the QA matrix builder.
+- **Flow C ("format_only")**: caller supplies an existing/legacy test
+  document + a target format upfront; enters directly at the formatter, which
+  translates/reformats that document with no BA/QA agents and no interrupts
+  at all — a single-pass, non-interactive request.
 
 ## Commands
 
@@ -54,16 +70,22 @@ vars (see `.env.example`).
 ### Pipeline
 
 ```
+Flow A (full):
 [Raw Inputs] --> qwen2.5vl:7b       Visual element/layout extraction (images only)
-             --> deepseek-r1:14b    Agent 1: BA Requirements Refiner (+ clarification loop)
-             --> deepseek-r1:14b    Agent 2: QA Test Matrix Builder (+ gap clarifier loop)
-             --> qwen2.5-coder:14b  Agent 3: Formatter Router (TestRail / qTest / Playwright)
+             --> deepseek-r1:7b     Requirement Evaluator (readiness score + interrupt)
+             --> deepseek-r1:7b     Agent 1: BA Requirements Refiner (+ clarification loop)
+             --> deepseek-r1:7b     Agent 2: QA Test Matrix Builder (+ gap clarifier loop)
+             --> qwen2.5:7b         Agent 3: Formatter Router (BDD/TestRail/qTest/Jira-Xray/Azure DevOps)
+
+Flow B (qa_direct):  [Pre-refined text] --> polished_spec --> Agent 2 --> Agent 3
+Flow C (format_only): [Legacy test cases] --> Agent 3 (translate mode, no BA/QA, no interrupts)
 ```
 
 This is implemented as a single LangGraph `StateGraph` in
 `backend/app/graph/build.py`, over the shared state schema in
 `backend/app/graph/state.py`. Node logic lives in `backend/app/graph/nodes.py`;
-all three agents call Ollama through the thin wrapper in
+all four agents (evaluator, BA refiner, QA matrix builder, formatter) call
+Ollama through the thin wrapper in
 `backend/app/graph/llm.py` (`ollama_chat`, which POSTs to `/api/chat`, supports
 image attachments for the vision model, and for `expect_json=True` calls does
 best-effort repair plus one corrective retry before giving up. The repair in
@@ -114,12 +136,46 @@ Ollama needed to verify the state machine itself. What isn't covered by those
 tests: real model output quality (prompt wording, actual ambiguity judgment,
 actual delta analysis) — that still needs a live model pass.
 
-Graph flow: `ingest_visual -> ba_refiner -> (conditional) -> qa_matrix_builder ->
-(conditional) -> checklist_signoff -> formatter`. The two conditional edges
-(`route_ambiguity`, `route_gaps`) loop back to `ba_clarification` /
-`gap_clarification` respectively when the corresponding LLM call reports
-unresolved ambiguity/gaps, re-entering `ba_refiner`/`qa_matrix_builder` once
-answered.
+Graph flow (see `backend/app/graph/build.py`):
+
+```
+START --route_entry--> ingest_visual        [workflow_mode in (full, qa_direct)]
+                     -> formatter            [workflow_mode == format_only, translate mode]
+
+ingest_visual --route_after_ingest--> requirement_evaluator   [full]
+                                    -> qa_matrix_builder        [qa_direct]
+
+requirement_evaluator -> evaluation_review (interrupt)
+evaluation_review --route_after_evaluation--> ba_refiner   [proceed]
+                                            -> END          [abort]
+
+ba_refiner --route_ambiguity--> qa_matrix_builder | ba_clarification
+ba_clarification -> ba_refiner   (loop back)
+
+qa_matrix_builder --route_gaps--> checklist_signoff | gap_clarification
+gap_clarification -> qa_matrix_builder   (loop back)
+
+checklist_signoff -> formatter -> END
+```
+
+Both entry routers (`route_entry`, `route_after_ingest`) default defensively
+to the "full"/non-`format_only` path for any missing or unrecognized
+`workflow_mode`, matching the codebase's `_coerce_enum` convention of never
+trusting a decision-point input. Confirmed via direct inspection of the
+installed `langgraph==0.2.76` source that `add_conditional_edges(START, ...)`
+is genuinely supported as a conditional entry point (not just something that
+happens to pass `validate()`) — traced through `StateGraph.compile()` and
+`Pregel`'s resume path; `Command(resume=...)` never re-touches the START
+channel, so a conditional entry point cannot be accidentally re-triggered
+mid-session on resume.
+
+Flow B (`qa_direct`) still routes through `ingest_visual` before diverging to
+`qa_matrix_builder`, even though it skips the BA refiner entirely — an
+earlier draft of this routing sent `qa_direct` straight from START, which
+would have silently dropped any uploaded screenshot's `visual_context` since
+nothing else populates it. `qa_matrix_builder_node` doesn't currently read
+`visual_context` either way, but the ingestion step at least isn't silently
+lost.
 
 Both loops are capped at `MAX_CLARIFICATION_ROUNDS` (currently 1, in
 `nodes.py` — originally 3, lowered since the smaller 7B models rarely
@@ -138,11 +194,25 @@ requirements + gathered Q&A rather than leaving `polished_spec` empty.
 
 ### Human-in-the-loop via LangGraph interrupts
 
-There are three pause points, each implemented with `langgraph.types.interrupt()`
-inside a dedicated node: `ba_clarification_node`, `gap_clarification_node`, and
-`checklist_signoff_node`. These three are `async def` (even though none of them
-`await` anything), which was a first guess at fixing a real crash — it turned
-out not to be the actual cause, but there's no harm in leaving them async.
+There are four pause points, each implemented with `langgraph.types.interrupt()`
+inside a dedicated node: `evaluation_review_node`, `ba_clarification_node`,
+`gap_clarification_node`, and `checklist_signoff_node`. These are all `async def`
+(even though none of them `await` anything), which was a first guess at fixing a
+real crash — it turned out not to be the actual cause, but there's no harm in
+leaving them async.
+
+**Every interrupt-calling node must do NO real work before its `interrupt()`
+call — put the work in a separate preceding node instead.** LangGraph replays
+a node's code from the top on every resume, up to (and re-executing) whatever
+runs before the `interrupt()` call in that same node. `requirement_evaluator_node`
+originally called the evaluation LLM *and then* called `interrupt()` in one
+node; a test caught that every resume silently re-ran the (expensive) LLM
+call. Fixed by splitting it into `requirement_evaluator_node` (does the LLM
+call, writes `readiness_score`/`evaluation_feedback`/`recommended_clarification_rounds`
+to state, no interrupt) followed by a plain edge into `evaluation_review_node`
+(interrupt-only, reads those values back out of state) — mirroring the
+existing `ba_refiner_node` -> `ba_clarification_node` split. Any new
+interrupt point should follow this same two-node shape from the start.
 
 **The real cause, and why `requirements.txt` pins exact versions**: with a
 loose `langgraph>=0.2.60,<0.3` range, `pip install` resolved a
@@ -170,8 +240,43 @@ Because FastAPI is stateless across requests, `session.py`'s `_to_response()`
 helper reconstructs "what is the frontend waiting for" purely by calling
 `graph.aget_state()` and inspecting `snapshot.next` (the node LangGraph is about
 to run) rather than tracking status separately — `snapshot.next` containing
-`ba_clarification`/`gap_clarification`/`checklist_signoff` is what drives the
-`awaiting_input` field the frontend switches on.
+`evaluation_review`/`ba_clarification`/`gap_clarification`/`checklist_signoff`
+(via `_AWAITING_BY_NEXT_NODE`, keyed by node name) is what drives the
+`awaiting_input` field the frontend switches on. Any new pause node must be
+added to that dict or the frontend has no way to learn it needs to render a
+step for it.
+
+An aborted Flow A session (user chose "abort" at the evaluation gate) also
+ends with `snapshot.next == ()`, structurally identical to a normally
+*completed* session's empty `next` — so `_to_response` does **not** rely on
+`next` emptiness to detect this. `evaluation_review_node` sets an explicit
+`workflow_aborted: bool` in state instead, echoed straight through in
+`SessionStateResponse.workflow_aborted`, which is the only reliable signal.
+
+### Requirement Evaluation Gate (Flow A only)
+
+`requirement_evaluator_node` scores raw-requirements completeness (0-100),
+lists qualitative gaps, and recommends a clarification-round count — explicitly
+instructed to ignore anything the user listed in `out_of_scope_details` (no
+score penalty, no questions about it). `evaluation_review_node` then pauses so
+the user can either override the round count (including `0`, which skips the
+BA clarification loop entirely on the very next `ba_refiner_node` call) or
+abort. `ba_refiner_node`'s force-resolve check reads
+`state.get("max_clarification_rounds", MAX_CLARIFICATION_ROUNDS)` — a
+per-session value set by `evaluation_review_node` — instead of the module
+constant directly; Flows B/C never populate that key (they skip the evaluator
+entirely) and correctly fall back to the module constant. The QA matrix
+builder's gap-loop cap is untouched by any of this — it's out of scope for the
+evaluator, which is specifically "immediately after ingestion in System 1."
+
+### Hierarchical test steps
+
+`test_matrix` items no longer have a flat `description: str` — each item has
+`steps: list[{step_number, action, expected_result}]`. `_coerce_test_matrix`
+is backward-compatible with a model that still returns the old flat
+`description` field (falls back to a single synthesized step from that text)
+so an under-instructed smaller model degrades gracefully instead of losing
+the scenario entirely.
 
 ### Ingestion
 
@@ -190,7 +295,50 @@ PDFs and CSVs are extracted to text synchronously via
 `app/services/file_parser.py` before the graph ever runs; images (only valid
 in `files[]`) are saved to `storage/<session_id>/` and passed as `image_paths`
 into the initial state, to be read and base64-encoded by the vision node at
-graph-execution time.
+graph-execution time. `start_session` also accepts `workflow_mode`,
+`out_of_scope_details`, and (Flow C only) an upfront `output_format` field —
+the last one means Flow C's very first response already has `output_format`
+populated, unlike Flows A/B where it stays `None` until checklist sign-off.
+
+### Formatter Router (5 formats)
+
+`FORMATTER_FORMAT_RULES` holds just the shape/column rules per format
+(`bdd`, `testrail`, `qtest`, `jira_xray`, `azure_devops`); a `COMPILE_INSTRUCTION`
+or `TRANSLATE_INSTRUCTION` wrapper is combined with those rules at call time
+depending on `workflow_mode == "format_only"`, so the rules text isn't
+duplicated between "compile this structured test_matrix" (Flows A/B) and
+"translate/reformat this existing document, don't invent new cases" (Flow C).
+
+Only the two formats with a hard machine-parseable contract get post-generation
+validation: `jira_xray` is re-parsed with the same `<think>`-stripping /
+`strict=False` tolerance as other structured LLM calls
+(`app.graph.llm._parse_json_with_repair`, reused directly) and re-serialized
+via `json.dumps` for a canonical string; `qtest`/`azure_devops` are checked
+with `csv.reader` for a consistent column count across every row. Both get one
+corrective retry on failure (`_validate_and_repair_json`/`_validate_and_repair_csv`),
+mirroring `ollama_chat`'s own JSON retry pattern. `bdd`/`testrail` get no extra
+validation — same precedent as the original 3-format router, lower structural
+risk since there's no hard parse contract to violate. `output_format`'s
+5-value Literal is duplicated across `state.py`, `schemas.py` (x2),
+`nodes.py`'s rules/sample-file dicts, and `session.py`'s download extension
+map — pre-existing duplication (was 3 formats across the same set of places),
+not something this change introduced or fixed.
+
+### Few-shot samples (`backend/app/samples/`, `backend/app/services/samples.py`)
+
+Gold-standard example files (`sample_raw_spec.md`/`expected_refined_spec.md`
+pair, `sample_test_matrix.json`, and one `expected_<format>.*` file per
+formatter format) are loaded via `samples.load_sample()` (`lru_cache`'d file
+read) and spliced into the relevant prompt via `samples.few_shot_block()` at
+**module import time** — `BA_REFINER_SYSTEM`/`QA_MATRIX_SYSTEM`/etc. are
+computed once when `nodes.py` is imported, not per-request. This means a
+missing/corrupt sample file fails the entire app at startup, not per-request —
+intentional fail-fast for what are meant to be permanent, version-controlled
+files, not something dynamic. Do not call `few_shot_block()` inside an f-string
+combined with a later `.format()` call on the same constant — the literal JSON
+braces in these prompts collide with `str.format()`'s placeholder syntax
+(hit this exact bug on `QA_MATRIX_SYSTEM`; fixed by using plain string
+concatenation instead of `.format()` to splice the example in).
 
 ### Model selection
 
@@ -225,6 +373,20 @@ the backend one. Every user action (`clarify-requirements`, `clarify-gaps`,
 response, which is why the checklist editor keeps its own local `matrix` copy
 (`ChecklistEditor.jsx`) until sign-off is submitted.
 
+**The frontend has not been updated for the multi-entry/evaluation-gate/
+hierarchical-steps backend changes** and is currently broken/incomplete
+against them:
+- No branch in `App.jsx`'s `stepKeyFor`/render logic for `awaiting_input ===
+  "requirement_evaluation"`, and no UI to call the new
+  `POST /{session_id}/evaluation-decision` endpoint.
+- `UploadStep.jsx` has no `workflow_mode` selector, no `out_of_scope_details`
+  field, and no Flow C upfront format picker.
+- `ChecklistEditor.jsx`'s output-format `<select>` still hardcodes the old
+  3 options (`testrail`/`qtest`/`playwright`) instead of the current 5
+  (`bdd`/`testrail`/`qtest`/`jira_xray`/`azure_devops`), and it still renders
+  `item.description`, which no longer exists on a `test_matrix` item — it's
+  `item.steps` now.
+
 See README.md's Troubleshooting section for real environment issues hit
 during setup (macOS system-Python contamination causing a LangGraph
 `get_config` crash, port-mismatch CORS/404s, etc.) before assuming a new bug
@@ -235,10 +397,15 @@ report is something novel in the code.
 - No persistent checkpointer (sessions lost on backend restart).
 - JSON repair is one corrective retry, not a full validation/repair loop —
   malformed output after the retry propagates as an unhandled exception
-  (surfaces to the caller as a 500).
+  (surfaces to the caller as a 500). The formatter's `jira_xray`/`qtest`/
+  `azure_devops` validate-and-repair helpers follow the same one-retry
+  ceiling, not a full loop either.
 - Prompts in `nodes.py` have never been run against a live model; expect to
-  iterate on wording once real DeepSeek-R1/Qwen output comes back.
-- Playwright export is prompt-only — no generated file is executed/validated.
+  iterate on wording once real DeepSeek-R1/Qwen output comes back — this is
+  now also true of the requirement-evaluation prompt and all 5 formatter
+  prompts, none of which have been validated against a live model yet either.
 - No automated frontend tests. Backend tests cover the graph's routing/loop
   logic and the health check, but not the FastAPI routes themselves
   (`routers/session.py`) or the file parsers.
+- Frontend is out of date against the current backend contract — see
+  "Frontend state machine" above for the specific gaps.

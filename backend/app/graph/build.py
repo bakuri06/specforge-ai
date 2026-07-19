@@ -9,6 +9,8 @@ def build_graph():
     workflow = StateGraph(SpecForgeState)
 
     workflow.add_node("ingest_visual", nodes.ingest_visual_node)
+    workflow.add_node("requirement_evaluator", nodes.requirement_evaluator_node)
+    workflow.add_node("evaluation_review", nodes.evaluation_review_node)
     workflow.add_node("ba_refiner", nodes.ba_refiner_node)
     workflow.add_node("ba_clarification", nodes.ba_clarification_node)
     workflow.add_node("qa_matrix_builder", nodes.qa_matrix_builder_node)
@@ -16,8 +18,27 @@ def build_graph():
     workflow.add_node("checklist_signoff", nodes.checklist_signoff_node)
     workflow.add_node("formatter", nodes.formatter_node)
 
-    workflow.add_edge(START, "ingest_visual")
-    workflow.add_edge("ingest_visual", "ba_refiner")
+    # Multi-entry routing: Flow A ("full") and Flow B ("qa_direct") both
+    # ingest first (so uploaded screenshots are never silently dropped for
+    # Flow B), then diverge; Flow C ("format_only") skips straight to the
+    # formatter with no BA/QA agents involved at all.
+    workflow.add_conditional_edges(
+        START,
+        nodes.route_entry,
+        {"ingest": "ingest_visual", "translate": "formatter"},
+    )
+    workflow.add_conditional_edges(
+        "ingest_visual",
+        nodes.route_after_ingest,
+        {"full": "requirement_evaluator", "qa_direct": "qa_matrix_builder"},
+    )
+
+    workflow.add_edge("requirement_evaluator", "evaluation_review")
+    workflow.add_conditional_edges(
+        "evaluation_review",
+        nodes.route_after_evaluation,
+        {"continue": "ba_refiner", "aborted": END},
+    )
 
     workflow.add_conditional_edges(
         "ba_refiner",

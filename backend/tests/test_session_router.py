@@ -77,6 +77,91 @@ def test_pasted_and_uploaded_legacy_cases_are_both_captured(monkeypatch):
     assert "Uploaded case" in legacy
 
 
+def test_qa_direct_rejects_blank_pre_refined_text(monkeypatch):
+    fake_graph = _FakeGraph()
+    monkeypatch.setattr(session_module, "graph", fake_graph)
+
+    response = client.post(
+        "/api/sessions/",
+        data={"workflow_mode": "qa_direct", "text": ""},
+    )
+
+    assert response.status_code == 400
+    assert fake_graph.state is None  # graph must never have been invoked
+
+
+def test_format_only_rejects_missing_legacy_test_cases(monkeypatch):
+    fake_graph = _FakeGraph()
+    monkeypatch.setattr(session_module, "graph", fake_graph)
+
+    response = client.post(
+        "/api/sessions/",
+        data={"workflow_mode": "format_only", "output_format": "bdd"},
+    )
+
+    assert response.status_code == 400
+    assert fake_graph.state is None
+
+
+def test_start_session_rejects_invalid_workflow_mode(monkeypatch):
+    fake_graph = _FakeGraph()
+    monkeypatch.setattr(session_module, "graph", fake_graph)
+
+    response = client.post(
+        "/api/sessions/",
+        data={"workflow_mode": "not-a-real-mode", "text": "Some text"},
+    )
+
+    assert response.status_code == 400
+    assert fake_graph.state is None
+
+
+def test_start_session_rejects_invalid_output_format(monkeypatch):
+    fake_graph = _FakeGraph()
+    monkeypatch.setattr(session_module, "graph", fake_graph)
+
+    response = client.post(
+        "/api/sessions/",
+        data={"output_format": "not-a-real-format", "text": "Some text"},
+    )
+
+    assert response.status_code == 400
+    assert fake_graph.state is None
+
+
+def test_format_only_populates_output_format_in_initial_state(monkeypatch):
+    fake_graph = _FakeGraph()
+    monkeypatch.setattr(session_module, "graph", fake_graph)
+
+    response = client.post(
+        "/api/sessions/",
+        data={
+            "workflow_mode": "format_only",
+            "legacy_test_cases": "TC-1: an existing case",
+            "output_format": "jira_xray",
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_graph.state["workflow_mode"] == "format_only"
+    assert fake_graph.state["output_format"] == "jira_xray"
+    assert fake_graph.state["legacy_test_cases"] == "TC-1: an existing case"
+
+
+def test_qa_direct_populates_polished_spec_from_uploaded_text(monkeypatch):
+    fake_graph = _FakeGraph()
+    monkeypatch.setattr(session_module, "graph", fake_graph)
+
+    response = client.post(
+        "/api/sessions/",
+        data={"workflow_mode": "qa_direct", "text": "Already-refined spec text"},
+    )
+
+    assert response.status_code == 200
+    assert fake_graph.state["workflow_mode"] == "qa_direct"
+    assert fake_graph.state["polished_spec"] == "Already-refined spec text"
+
+
 def test_malformed_model_output_does_not_crash_response_construction(monkeypatch):
     """True end-to-end regression for the live crash: runs the REAL graph
     (not the FakeGraph used elsewhere in this file), since the failure was
@@ -85,6 +170,14 @@ def test_malformed_model_output_does_not_crash_response_construction(monkeypatch
     placeholder string copied from the prompt's own shape example."""
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        # The evaluator's prompt also mentions "senior Business Analyst", so
+        # it must be checked first via a marker unique to it.
+        if "recommended_clarification_rounds" in prompt:
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
         if "senior Business Analyst" in prompt:
             return {
                 "ambiguous": False,
@@ -100,7 +193,9 @@ def test_malformed_model_output_does_not_crash_response_construction(monkeypatch
                         "id": "TC-1",
                         "category": "sunny_day|rainy_day|boundary|edge_case",
                         "title": "Happy path",
-                        "description": "d",
+                        "steps": [
+                            {"step_number": 1, "action": "a", "expected_result": "r"}
+                        ],
                         "status": "new|modified|broken|unchanged",
                         "included": True,
                     }
@@ -110,10 +205,19 @@ def test_malformed_model_output_does_not_crash_response_construction(monkeypatch
 
     monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
 
-    response = client.post("/api/sessions/", data={"text": "Some requirements"})
+    start_response = client.post("/api/sessions/", data={"text": "Some requirements"})
+    assert start_response.status_code == 200
+    start_body = start_response.json()
+    assert start_body["awaiting_input"] == "requirement_evaluation"
+
+    response = client.post(
+        f"/api/sessions/{start_body['session_id']}/evaluation-decision",
+        json={"action": "proceed"},
+    )
 
     assert response.status_code == 200
     body = response.json()
+    assert body["awaiting_input"] == "checklist_signoff"
     assert isinstance(body["polished_spec"], str)
     assert body["test_matrix"][0]["category"] == "sunny_day"
     assert body["test_matrix"][0]["status"] == "new"

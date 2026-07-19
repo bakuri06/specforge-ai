@@ -10,6 +10,7 @@ from app.graph.build import graph
 from app.models.schemas import (
     ChecklistSignoff,
     ClarificationAnswers,
+    EvaluationDecision,
     SessionStateResponse,
 )
 from app.services.file_parser import extract_text_from_csv, extract_text_from_pdf
@@ -19,10 +20,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 _AWAITING_BY_NEXT_NODE = {
+    "evaluation_review": "requirement_evaluation",
     "ba_clarification": "ba_clarification",
     "gap_clarification": "gap_clarification",
     "checklist_signoff": "checklist_signoff",
 }
+
+VALID_WORKFLOW_MODES = {"full", "qa_direct", "format_only"}
+VALID_OUTPUT_FORMATS = {"bdd", "testrail", "qtest", "jira_xray", "azure_devops"}
 
 
 def _config(session_id: str) -> dict:
@@ -42,6 +47,12 @@ async def _to_response(session_id: str) -> SessionStateResponse:
         session_id=session_id,
         stage=values.get("stage", "start"),
         awaiting_input=awaiting,
+        workflow_mode=values.get("workflow_mode"),
+        workflow_aborted=bool(values.get("workflow_aborted", False)),
+        out_of_scope_details=values.get("out_of_scope_details"),
+        readiness_score=values.get("readiness_score"),
+        evaluation_feedback=values.get("evaluation_feedback", []),
+        recommended_clarification_rounds=values.get("recommended_clarification_rounds"),
         ambiguity_questions=values.get("ambiguity_questions", [])
         if awaiting == "ba_clarification"
         else [],
@@ -87,11 +98,24 @@ async def start_session(
     vision_model: str = Form(""),
     reasoning_model: str = Form(""),
     formatter_model: str = Form(""),
+    workflow_mode: str = Form("full"),
+    out_of_scope_details: str = Form(""),
+    output_format: str = Form(""),
 ):
+    if workflow_mode not in VALID_WORKFLOW_MODES:
+        raise HTTPException(
+            400, f"workflow_mode must be one of {sorted(VALID_WORKFLOW_MODES)}."
+        )
+    if output_format and output_format not in VALID_OUTPUT_FORMATS:
+        raise HTTPException(
+            400, f"output_format must be one of {sorted(VALID_OUTPUT_FORMATS)}."
+        )
+
     session_id = str(uuid.uuid4())
     logger.info(
-        "[%s] POST /api/sessions/: text_chars=%d files=%d legacy_files=%d",
+        "[%s] POST /api/sessions/: workflow_mode=%s text_chars=%d files=%d legacy_files=%d",
         session_id,
+        workflow_mode,
         len(text),
         len(files),
         len(legacy_files),
@@ -116,11 +140,24 @@ async def start_session(
         dest = await _save_upload(upload, upload_dir)
         legacy_parts.append(_extract_text(dest, upload.filename, content_type))
 
-    if not text_parts and not image_paths:
+    if workflow_mode == "qa_direct":
+        if not text_parts:
+            raise HTTPException(
+                400,
+                "Provide the pre-refined requirements text or file for QA-direct mode.",
+            )
+    elif workflow_mode == "format_only":
+        if not legacy_parts:
+            raise HTTPException(
+                400, "Provide existing test cases to translate for format-only mode."
+            )
+    elif not text_parts and not image_paths:
         raise HTTPException(400, "Provide at least some text or a file to analyze.")
 
     initial_state = {
         "session_id": session_id,
+        "workflow_mode": workflow_mode,
+        "out_of_scope_details": out_of_scope_details,
         "requirements_draft": "\n\n".join(text_parts),
         "image_paths": image_paths,
         "legacy_test_cases": "\n\n".join(legacy_parts),
@@ -130,6 +167,13 @@ async def start_session(
         "reasoning_model": reasoning_model or settings.reasoning_model,
         "formatter_model": formatter_model or settings.formatter_model,
     }
+    if workflow_mode == "qa_direct":
+        # Flow B: the uploaded/pasted text IS the already-refined spec, so
+        # feed it straight to qa_matrix_builder_node's polished_spec read
+        # instead of running it through the BA refiner.
+        initial_state["polished_spec"] = "\n\n".join(text_parts)
+    if workflow_mode == "format_only":
+        initial_state["output_format"] = output_format or "testrail"
 
     logger.info("[%s] running graph (this can take a while)...", session_id)
     await graph.ainvoke(initial_state, config=_config(session_id))
@@ -141,6 +185,26 @@ async def start_session(
 @router.get("/{session_id}", response_model=SessionStateResponse)
 async def get_session(session_id: str):
     return await _to_response(session_id)
+
+
+@router.post("/{session_id}/evaluation-decision", response_model=SessionStateResponse)
+async def evaluation_decision(session_id: str, payload: EvaluationDecision):
+    logger.info(
+        "[%s] POST evaluation-decision: action=%s, max_clarification_rounds=%s, "
+        "resuming graph...",
+        session_id,
+        payload.action,
+        payload.max_clarification_rounds,
+    )
+    await graph.ainvoke(Command(resume=payload.model_dump()), config=_config(session_id))
+    response = await _to_response(session_id)
+    logger.info(
+        "[%s] evaluation_decision: awaiting_input=%s, workflow_aborted=%s",
+        session_id,
+        response.awaiting_input,
+        response.workflow_aborted,
+    )
+    return response
 
 
 @router.post("/{session_id}/clarify-requirements", response_model=SessionStateResponse)
@@ -198,7 +262,13 @@ async def download(session_id: str):
         raise HTTPException(404, "No formatted output available yet for this session.")
 
     fmt = snapshot.values.get("output_format", "testrail")
-    extension = {"testrail": "md", "qtest": "csv", "playwright": "ts"}.get(fmt, "txt")
+    extension = {
+        "bdd": "feature",
+        "testrail": "md",
+        "qtest": "csv",
+        "jira_xray": "json",
+        "azure_devops": "csv",
+    }.get(fmt, "txt")
     return Response(
         content=output,
         media_type="text/plain",

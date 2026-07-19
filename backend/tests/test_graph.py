@@ -4,19 +4,51 @@ from app.graph import nodes as nodes_module
 from app.graph.build import graph
 
 
-def _initial_state(session_id: str, requirements: str, legacy_test_cases: str = "") -> dict:
-    return {
+def _initial_state(
+    session_id: str,
+    requirements: str,
+    legacy_test_cases: str = "",
+    workflow_mode: str = "full",
+    **extra,
+) -> dict:
+    state = {
         "session_id": session_id,
+        "workflow_mode": workflow_mode,
         "requirements_draft": requirements,
         "image_paths": [],
         "legacy_test_cases": legacy_test_cases,
         "qa_history": [],
         "gap_qa_history": [],
     }
+    state.update(extra)
+    return state
 
 
 def _config(session_id: str) -> dict:
     return {"configurable": {"thread_id": session_id}}
+
+
+def _is_evaluator_prompt(prompt: str) -> bool:
+    return "recommended_clarification_rounds" in prompt
+
+
+def _is_ba_refiner_prompt(prompt: str) -> bool:
+    # Both the evaluator and BA refiner prompts mention "senior Business
+    # Analyst", so this must be checked after _is_evaluator_prompt, not
+    # instead of it. "Core Calculation Framework" only appears in the BA
+    # refiner's section-template constant.
+    return "Core Calculation Framework" in prompt
+
+
+def _is_qa_matrix_prompt(prompt: str) -> bool:
+    return "senior QA Engineer" in prompt
+
+
+async def _resume_evaluator(config, action="proceed", max_clarification_rounds=None):
+    payload = {"action": action}
+    if max_clarification_rounds is not None:
+        payload["max_clarification_rounds"] = max_clarification_rounds
+    return await graph.ainvoke(Command(resume=payload), config=config)
 
 
 async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
@@ -25,7 +57,13 @@ async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
     qa_calls = {"count": 0}
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 40,
+                "evaluation_feedback": ["Timeout behavior undefined"],
+                "recommended_clarification_rounds": 1,
+            }
+        if _is_ba_refiner_prompt(prompt):
             ba_calls["count"] += 1
             if ba_calls["count"] == 1:
                 return {
@@ -35,7 +73,7 @@ async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
                 }
             return {"ambiguous": False, "questions": [], "polished_spec": "# Polished Spec"}
 
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             qa_calls["count"] += 1
             if qa_calls["count"] == 1:
                 return {
@@ -51,7 +89,13 @@ async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
                         "id": "TC-1",
                         "category": "sunny_day",
                         "title": "Happy path submission",
-                        "description": "Submit the form with valid data.",
+                        "steps": [
+                            {
+                                "step_number": 1,
+                                "action": "Submit the form with valid data",
+                                "expected_result": "Submission succeeds",
+                            }
+                        ],
                         "status": "new",
                         "included": True,
                     }
@@ -68,6 +112,10 @@ async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
     await graph.ainvoke(
         _initial_state(session_id, "Users can submit a form."), config=config
     )
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("evaluation_review",)
+
+    await _resume_evaluator(config)
     snapshot = await graph.aget_state(config)
     assert snapshot.next == ("ba_clarification",)
     assert snapshot.values["ambiguity_questions"] == [
@@ -97,7 +145,13 @@ async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
             "id": "TC-2",
             "category": "edge_case",
             "title": "Concurrent submissions",
-            "description": "Submit the same form twice at once.",
+            "steps": [
+                {
+                    "step_number": 1,
+                    "action": "Submit the same form twice at once",
+                    "expected_result": "Only one submission is accepted",
+                }
+            ],
             "status": "new",
             "included": True,
         }
@@ -117,9 +171,15 @@ async def test_straight_through_when_spec_and_matrix_are_clean(monkeypatch):
     """No ambiguity, no gaps: both agents should resolve on their first call."""
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 95,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if _is_ba_refiner_prompt(prompt):
             return {"ambiguous": False, "questions": [], "polished_spec": "Clean spec"}
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             return {
                 "gaps_found": False,
                 "questions": [],
@@ -128,7 +188,9 @@ async def test_straight_through_when_spec_and_matrix_are_clean(monkeypatch):
                         "id": "TC-1",
                         "category": "sunny_day",
                         "title": "Happy path",
-                        "description": "d",
+                        "steps": [
+                            {"step_number": 1, "action": "a", "expected_result": "r"}
+                        ],
                         "status": "new",
                         "included": True,
                     }
@@ -144,6 +206,10 @@ async def test_straight_through_when_spec_and_matrix_are_clean(monkeypatch):
     await graph.ainvoke(
         _initial_state(session_id, "Fully specified requirements."), config=config
     )
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("evaluation_review",)
+
+    await _resume_evaluator(config)
     snapshot = await graph.aget_state(config)
     assert snapshot.next == ("checklist_signoff",)
     assert snapshot.values["polished_spec"] == "Clean spec"
@@ -162,16 +228,91 @@ async def test_straight_through_when_spec_and_matrix_are_clean(monkeypatch):
     assert snapshot.values["formatted_output"] == "FORMATTED"
 
 
+async def test_requirement_evaluation_abort_stops_pipeline(monkeypatch):
+    """The user can abort right after seeing the readiness evaluation instead
+    of proceeding into the BA clarification loop."""
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 20,
+                "evaluation_feedback": ["Way too vague"],
+                "recommended_clarification_rounds": 3,
+            }
+        raise AssertionError("no further model calls expected after abort")
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-abort"
+    config = _config(session_id)
+
+    await graph.ainvoke(_initial_state(session_id, "Vague."), config=config)
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("evaluation_review",)
+
+    await _resume_evaluator(config, action="abort")
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ()
+    assert snapshot.values["workflow_aborted"] is True
+    assert snapshot.values["stage"] == "aborted"
+    assert snapshot.values["readiness_score"] == 20
+
+
+async def test_max_clarification_rounds_zero_skips_ba_loop_entirely(monkeypatch):
+    """Overriding max_clarification_rounds to 0 at the evaluation gate must
+    force-resolve on the very first ba_refiner call, even though the model
+    itself reports the input as ambiguous."""
+    ba_calls = {"count": 0}
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 50,
+                "evaluation_feedback": ["Some gaps"],
+                "recommended_clarification_rounds": 2,
+            }
+        if _is_ba_refiner_prompt(prompt):
+            ba_calls["count"] += 1
+            return {
+                "ambiguous": True,
+                "questions": ["Would ask this if allowed"],
+                "polished_spec": "",
+            }
+        if _is_qa_matrix_prompt(prompt):
+            return {"gaps_found": False, "questions": [], "test_matrix": []}
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-zero-rounds"
+    config = _config(session_id)
+
+    await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+    await _resume_evaluator(config, max_clarification_rounds=0)
+
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("checklist_signoff",)
+    assert snapshot.values["ambiguity_resolved"] is True
+    assert ba_calls["count"] == 1
+    assert snapshot.values["max_clarification_rounds"] == 0
+
+
 async def test_ba_refiner_forces_resolution_after_max_rounds(monkeypatch):
     """If the model keeps finding new ambiguity forever, the app must not get
     stuck in an infinite clarification loop — it must force a resolution once
-    MAX_CLARIFICATION_ROUNDS rounds have been used, regardless of what the
-    model itself reports."""
+    the session's max_clarification_rounds have been used, regardless of what
+    the model itself reports."""
     ba_calls = {"count": 0}
     seen_prompts = []
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 50,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 1,
+            }
+        if _is_ba_refiner_prompt(prompt):
             ba_calls["count"] += 1
             seen_prompts.append(prompt)
             return {
@@ -179,7 +320,7 @@ async def test_ba_refiner_forces_resolution_after_max_rounds(monkeypatch):
                 "questions": [f"Question round {ba_calls['count']}"],
                 "polished_spec": "",
             }
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             return {"gaps_found": False, "questions": [], "test_matrix": []}
         return "FORMATTED"
 
@@ -189,8 +330,10 @@ async def test_ba_refiner_forces_resolution_after_max_rounds(monkeypatch):
     config = _config(session_id)
 
     await graph.ainvoke(_initial_state(session_id, "Vague requirements."), config=config)
+    await _resume_evaluator(config)
 
-    for _ in range(nodes_module.MAX_CLARIFICATION_ROUNDS):
+    max_rounds = 1
+    for _ in range(max_rounds):
         snapshot = await graph.aget_state(config)
         assert snapshot.next == ("ba_clarification",)
         await graph.ainvoke(Command(resume=["some answer"]), config=config)
@@ -198,7 +341,7 @@ async def test_ba_refiner_forces_resolution_after_max_rounds(monkeypatch):
     snapshot = await graph.aget_state(config)
     assert snapshot.next == ("checklist_signoff",)
     assert snapshot.values["ambiguity_resolved"] is True
-    assert ba_calls["count"] == nodes_module.MAX_CLARIFICATION_ROUNDS + 1
+    assert ba_calls["count"] == max_rounds + 1
     assert "maximum number of clarification rounds" in seen_prompts[-1]
     # The mock never provides a polished_spec even when forced, so the
     # fallback synthesis (raw requirements + gathered Q&A) must kick in.
@@ -206,14 +349,22 @@ async def test_ba_refiner_forces_resolution_after_max_rounds(monkeypatch):
 
 
 async def test_qa_matrix_builder_forces_resolution_after_max_rounds(monkeypatch):
-    """Same safety net as the BA loop, for Agent 2's gap-clarification loop."""
+    """Same safety net as the BA loop, for Agent 2's gap-clarification loop.
+    This loop is unaffected by the evaluator's max_clarification_rounds
+    override — it stays on the module-level MAX_CLARIFICATION_ROUNDS."""
     qa_calls = {"count": 0}
     seen_prompts = []
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if _is_ba_refiner_prompt(prompt):
             return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             qa_calls["count"] += 1
             seen_prompts.append(prompt)
             return {
@@ -229,6 +380,7 @@ async def test_qa_matrix_builder_forces_resolution_after_max_rounds(monkeypatch)
     config = _config(session_id)
 
     await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+    await _resume_evaluator(config)
 
     for _ in range(nodes_module.MAX_CLARIFICATION_ROUNDS):
         snapshot = await graph.aget_state(config)
@@ -249,9 +401,15 @@ async def test_per_session_model_override_is_used_over_settings_default(monkeypa
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
         seen_models.append(model)
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if _is_ba_refiner_prompt(prompt):
             return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             return {"gaps_found": False, "questions": [], "test_matrix": []}
         return "FORMATTED"
 
@@ -264,11 +422,18 @@ async def test_per_session_model_override_is_used_over_settings_default(monkeypa
     initial_state["formatter_model"] = "qwen2.5:7b"
 
     await graph.ainvoke(initial_state, config=config)
+    await _resume_evaluator(config)
     await graph.ainvoke(
         Command(resume={"test_matrix": [], "output_format": "testrail"}), config=config
     )
 
-    assert seen_models == ["deepseek-r1:7b", "deepseek-r1:7b", "qwen2.5:7b"]
+    # evaluator, ba_refiner, qa_matrix_builder all use reasoning_model; formatter uses formatter_model
+    assert seen_models == [
+        "deepseek-r1:7b",
+        "deepseek-r1:7b",
+        "deepseek-r1:7b",
+        "qwen2.5:7b",
+    ]
 
 
 async def test_polished_spec_returned_as_dict_is_coerced_to_string(monkeypatch):
@@ -277,13 +442,19 @@ async def test_polished_spec_returned_as_dict_is_coerced_to_string(monkeypatch):
     which crashed SessionStateResponse's pydantic validation downstream."""
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if _is_ba_refiner_prompt(prompt):
             return {
                 "ambiguous": False,
                 "questions": [],
                 "polished_spec": {"Overview": "A feature description", "Type": "Database"},
             }
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             return {"gaps_found": False, "questions": [], "test_matrix": []}
         return "FORMATTED"
 
@@ -292,6 +463,7 @@ async def test_polished_spec_returned_as_dict_is_coerced_to_string(monkeypatch):
     session_id = "test-dict-spec"
     config = _config(session_id)
     await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+    await _resume_evaluator(config)
 
     snapshot = await graph.aget_state(config)
     assert isinstance(snapshot.values["polished_spec"], str)
@@ -305,9 +477,15 @@ async def test_category_placeholder_string_is_coerced_to_valid_enum_value(monkey
     for every scenario, instead of picking one."""
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if _is_ba_refiner_prompt(prompt):
             return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             return {
                 "gaps_found": False,
                 "questions": [],
@@ -316,7 +494,9 @@ async def test_category_placeholder_string_is_coerced_to_valid_enum_value(monkey
                         "id": "TC-1",
                         "category": "sunny_day|rainy_day|boundary|edge_case",
                         "title": "Happy path",
-                        "description": "d",
+                        "steps": [
+                            {"step_number": 1, "action": "a", "expected_result": "r"}
+                        ],
                         "status": "new|modified|broken|unchanged",
                         "included": True,
                     }
@@ -329,6 +509,7 @@ async def test_category_placeholder_string_is_coerced_to_valid_enum_value(monkey
     session_id = "test-category-placeholder"
     config = _config(session_id)
     await graph.ainvoke(_initial_state(session_id, "Some requirements."), config=config)
+    await _resume_evaluator(config)
 
     snapshot = await graph.aget_state(config)
     matrix = snapshot.values["test_matrix"]
@@ -341,9 +522,15 @@ async def test_legacy_test_cases_are_forwarded_into_qa_prompt(monkeypatch):
     seen_prompts = []
 
     async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
-        if "senior Business Analyst" in prompt:
+        if _is_evaluator_prompt(prompt):
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if _is_ba_refiner_prompt(prompt):
             return {"ambiguous": False, "questions": [], "polished_spec": "Spec"}
-        if "senior QA Engineer" in prompt:
+        if _is_qa_matrix_prompt(prompt):
             seen_prompts.append(prompt)
             return {
                 "gaps_found": False,
@@ -362,6 +549,84 @@ async def test_legacy_test_cases_are_forwarded_into_qa_prompt(monkeypatch):
         _initial_state(session_id, "Login flow now requires MFA.", legacy_test_cases=legacy),
         config=config,
     )
+    await _resume_evaluator(config)
 
     assert len(seen_prompts) == 1
     assert legacy in seen_prompts[0]
+
+
+async def test_flow_b_qa_direct_still_processes_uploaded_images(monkeypatch):
+    """Flow B (qa_direct) must still route through ingest_visual so uploaded
+    screenshots aren't silently dropped, even though it skips the BA refiner
+    entirely (start_session pre-populates polished_spec directly)."""
+    vision_calls = {"count": 0}
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if images:
+            vision_calls["count"] += 1
+            return "Login form with username/password fields"
+        if _is_qa_matrix_prompt(prompt):
+            return {"gaps_found": False, "questions": [], "test_matrix": []}
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-flow-b-images"
+    config = _config(session_id)
+    initial_state = _initial_state(
+        session_id,
+        "",
+        workflow_mode="qa_direct",
+        polished_spec="Already-refined spec text",
+        image_paths=["fake/screenshot.png"],
+    )
+
+    await graph.ainvoke(initial_state, config=config)
+    snapshot = await graph.aget_state(config)
+
+    assert vision_calls["count"] == 1
+    assert "Login form" in snapshot.values["visual_context"]
+    assert snapshot.next == ("checklist_signoff",)
+
+
+async def test_flow_c_format_only_reaches_formatter_directly(monkeypatch):
+    """Flow C (format_only) must skip the BA/QA agents and interrupts
+    entirely, translating legacy_test_cases straight into the target format
+    in a single pass."""
+    seen_prompts = []
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        seen_prompts.append(prompt)
+        return "Feature: translated\n  Scenario: existing case"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-flow-c"
+    config = _config(session_id)
+    initial_state = _initial_state(
+        session_id,
+        "",
+        workflow_mode="format_only",
+        legacy_test_cases="TC-1: Old login test case",
+        output_format="bdd",
+    )
+
+    await graph.ainvoke(initial_state, config=config)
+    snapshot = await graph.aget_state(config)
+
+    assert snapshot.next == ()
+    assert snapshot.values.get("test_matrix", []) == []
+    assert "Feature: translated" in snapshot.values["formatted_output"]
+    assert len(seen_prompts) == 1
+    assert "Translate/reformat" in seen_prompts[0]
+    assert "TC-1: Old login test case" in seen_prompts[0]
+
+
+def test_route_entry_and_route_after_ingest_default_to_full_on_bad_workflow_mode():
+    assert nodes_module.route_entry({}) == "ingest"
+    assert nodes_module.route_entry({"workflow_mode": "bogus"}) == "ingest"
+    assert nodes_module.route_entry({"workflow_mode": "format_only"}) == "translate"
+
+    assert nodes_module.route_after_ingest({}) == "full"
+    assert nodes_module.route_after_ingest({"workflow_mode": "bogus"}) == "full"
+    assert nodes_module.route_after_ingest({"workflow_mode": "qa_direct"}) == "qa_direct"

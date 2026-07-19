@@ -1,0 +1,64 @@
+[
+  {
+    "id": "TC-1",
+    "category": "sunny_day",
+    "title": "Transfer within daily limit succeeds",
+    "steps": [
+      {
+        "step_number": 1,
+        "action": "Log in as a user with $10,000 available balance and no prior transfers today",
+        "expected_result": "User is on the Transfer Money screen"
+      },
+      {
+        "step_number": 2,
+        "action": "Enter recipient account and amount $500, submit",
+        "expected_result": "Transfer is created with status 'pending', then transitions to 'processing'"
+      },
+      {
+        "step_number": 3,
+        "action": "Wait for Ledger Service confirmation",
+        "expected_result": "Transfer status becomes 'completed' and sender balance decreases by $500"
+      }
+    ],
+    "status": "new",
+    "included": true
+  },
+  {
+    "id": "TC-2",
+    "category": "boundary",
+    "title": "Transfer exceeding daily limit is rejected",
+    "steps": [
+      {
+        "step_number": 1,
+        "action": "Log in as a user who has already transferred $4,800 today",
+        "expected_result": "User is on the Transfer Money screen"
+      },
+      {
+        "step_number": 2,
+        "action": "Enter a transfer amount of $300, submit",
+        "expected_result": "System rejects the transfer with a 'daily limit exceeded' error before any ledger call is made, sender balance is unchanged"
+      }
+    ],
+    "status": "new",
+    "included": true
+  },
+  {
+    "id": "TC-3",
+    "category": "rainy_day",
+    "title": "Ledger Service timeout marks transfer as failed",
+    "steps": [
+      {
+        "step_number": 1,
+        "action": "Log in and submit a valid transfer of $200 while the Ledger Service is simulated to not respond",
+        "expected_result": "Transfer is created with status 'pending' then 'processing'"
+      },
+      {
+        "step_number": 2,
+        "action": "Wait 10+ seconds for the Ledger Service call to time out",
+        "expected_result": "Transfer status becomes 'failed', held sender balance is released, and the user sees a retryable error message"
+      }
+    ],
+    "status": "new",
+    "included": true
+  }
+]

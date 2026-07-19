@@ -1,0 +1,24 @@
+## TC-1: Transfer within daily limit succeeds
+**Category:** Sunny Day
+
+| Step # | Action | Expected Result |
+| --- | --- | --- |
+| 1 | Log in as a user with $10,000 available balance and no prior transfers today | User is on the Transfer Money screen |
+| 2 | Enter recipient account and amount $500, submit | Transfer is created with status 'pending', then transitions to 'processing' |
+| 3 | Wait for Ledger Service confirmation | Transfer status becomes 'completed' and sender balance decreases by $500 |
+
+## TC-2: Transfer exceeding daily limit is rejected
+**Category:** Boundary
+
+| Step # | Action | Expected Result |
+| --- | --- | --- |
+| 1 | Log in as a user who has already transferred $4,800 today | User is on the Transfer Money screen |
+| 2 | Enter a transfer amount of $300, submit | System rejects the transfer with a 'daily limit exceeded' error before any ledger call is made, sender balance is unchanged |
+
+## TC-3: Ledger Service timeout marks transfer as failed
+**Category:** Rainy Day
+
+| Step # | Action | Expected Result |
+| --- | --- | --- |
+| 1 | Log in and submit a valid transfer of $200 while the Ledger Service is simulated to not respond | Transfer is created with status 'pending' then 'processing' |
+| 2 | Wait 10+ seconds for the Ledger Service call to time out | Transfer status becomes 'failed', held sender balance is released, and the user sees a retryable error message |
