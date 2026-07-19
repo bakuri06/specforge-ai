@@ -90,7 +90,7 @@ Ollama through the thin wrapper in
 `backend/app/graph/llm.py` (`ollama_chat`, which POSTs to `/api/chat`, supports
 image attachments for the vision model, and for `expect_json=True` calls does
 best-effort repair plus one corrective retry before giving up. The repair in
-`_parse_json_with_repair` specifically targets three DeepSeek-R1 quirks hit
+`_parse_json_with_repair` specifically targets four DeepSeek-R1 quirks hit
 live (worse on the smaller `deepseek-r1:7b` than `:14b`, and worse the
 longer/more structured the requested string value is): it strips any
 `<think>...</think>` reasoning block before brace-extracting (R1 emits these
@@ -99,15 +99,23 @@ otherwise confuse naive brace-slicing); it parses with
 `json.loads(..., strict=False)` so a literal unescaped newline inside a
 string value (e.g. a multi-paragraph markdown spec) doesn't raise
 `Invalid control character` instead of just being treated as part of the
-string; and it falls back to `_fix_invalid_escapes` (escaping any backslash
-that isn't already a valid JSON escape char) for a literal backslash inside a
+string; it falls back to `_fix_invalid_escapes` (escaping any backslash that
+isn't already a valid JSON escape char) for a literal backslash inside a
 string value — e.g. a regex-style pattern like `\d{6}` written without
 doubling it — which raises `Invalid \escape` regardless of `strict=False`
-(that flag only relaxes control characters, not malformed escape sequences).
-This one hit on *both* the original call and the corrective retry in a live
-run, confirming re-prompting alone isn't reliable for this class of error —
-the parser itself has to repair it. See `test_llm_parsing.py` for the exact
-repro of both.
+(that flag only relaxes control characters, not malformed escape sequences);
+and it falls back to `_remove_trailing_commas` for a comma left before a
+closing `}`/`]` (valid in a JS object/array literal, invalid in strict JSON,
+and surfaces as a confusing `Expecting value` error that never mentions a
+comma at all). The escape and trailing-comma repairs are genuinely
+last-resort — tried only after a plain parse of every candidate fails — since
+rewriting content always carries some risk of changing meaning; the escape
+one specifically hit on *both* the original call and the corrective retry in
+a live run, confirming re-prompting alone isn't reliable for this class of
+error and the parser itself has to repair it. `_parse_json_with_repair` tries
+each repair (identity, escape-fix, trailing-comma-fix, both together) against
+both the raw and brace-sliced content before giving up. See
+`test_llm_parsing.py` for the exact repro of each.
 
 Getting valid JSON back isn't the same as getting the right *shape* back —
 `_parse_json_with_repair` only guarantees parseable JSON, not that

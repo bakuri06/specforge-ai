@@ -55,6 +55,41 @@ def test_valid_escapes_are_left_untouched_while_invalid_ones_are_fixed():
     assert result["a"] == "line one\nline two, pattern \\d{6}, quote \" done"
 
 
+def test_repairs_trailing_comma_before_closing_brace():
+    content = '{"a": "one", "b": "two",}'
+    result = _parse_json_with_repair(content)
+    assert result == {"a": "one", "b": "two"}
+
+
+def test_repairs_trailing_comma_before_closing_bracket():
+    content = '{"items": ["a", "b",]}'
+    result = _parse_json_with_repair(content)
+    assert result == {"items": ["a", "b"]}
+
+
+def test_repairs_trailing_comma_in_pretty_printed_multiline_json():
+    """Matches the live shape of the bug: a genuinely multi-line, indented
+    JSON response (raising 'Expecting value' several lines in) with a
+    trailing comma before the closing brace - valid in a JS object literal,
+    invalid in strict JSON, and a confusing error message that doesn't
+    mention commas at all."""
+    content = (
+        "{\n"
+        '  "ambiguous": false,\n'
+        '  "questions": [],\n'
+        '  "polished_spec": "Spec text",\n'
+        "}\n"
+    )
+    result = _parse_json_with_repair(content)
+    assert result == {"ambiguous": False, "questions": [], "polished_spec": "Spec text"}
+
+
+def test_repairs_trailing_comma_and_invalid_escape_together():
+    content = r'{"pattern": "\d{6}", "extra": "value",}'
+    result = _parse_json_with_repair(content)
+    assert result == {"pattern": "\\d{6}", "extra": "value"}
+
+
 def test_raises_when_content_has_no_json_at_all():
     with pytest.raises(json.JSONDecodeError):
         _parse_json_with_repair("just some prose, no braces here")
