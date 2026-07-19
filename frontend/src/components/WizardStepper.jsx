@@ -1,5 +1,6 @@
 const STEPS = [
   { key: 'upload', label: 'Upload' },
+  { key: 'evaluate', label: 'Readiness Check' },
   { key: 'refine', label: 'Refine Spec' },
   { key: 'matrix', label: 'Test Matrix' },
   { key: 'export', label: 'Export' },

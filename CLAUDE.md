@@ -9,9 +9,10 @@ SpecForge AI: a LangGraph-orchestrated pipeline that turns raw requirements
 export-ready test artifacts (BDD/Gherkin, TestRail Markdown, qTest CSV,
 Jira/Xray JSON, Azure DevOps CSV), running entirely against local Ollama
 models. Backend is FastAPI + LangGraph (`backend/`); frontend is a
-React/Vite/Tailwind wizard (`frontend/`) — **the frontend has not been updated
-for the multi-entry/evaluation-gate/hierarchical-steps changes below; see
-"Known gaps."**
+React/Vite/Tailwind wizard (`frontend/`), including the requirement-evaluation
+step and hierarchical test-step editing (see "Known gaps" for what's still
+Flow-A-only in the UI: no `workflow_mode`/`out_of_scope_details` selection
+yet, so Flows B/C can only be driven via the API directly).
 
 The graph supports three independent entry points (`workflow_mode`), not just
 one linear pipeline:
@@ -373,19 +374,22 @@ the backend one. Every user action (`clarify-requirements`, `clarify-gaps`,
 response, which is why the checklist editor keeps its own local `matrix` copy
 (`ChecklistEditor.jsx`) until sign-off is submitted.
 
-**The frontend has not been updated for the multi-entry/evaluation-gate/
-hierarchical-steps backend changes** and is currently broken/incomplete
-against them:
-- No branch in `App.jsx`'s `stepKeyFor`/render logic for `awaiting_input ===
-  "requirement_evaluation"`, and no UI to call the new
-  `POST /{session_id}/evaluation-decision` endpoint.
-- `UploadStep.jsx` has no `workflow_mode` selector, no `out_of_scope_details`
-  field, and no Flow C upfront format picker.
-- `ChecklistEditor.jsx`'s output-format `<select>` still hardcodes the old
-  3 options (`testrail`/`qtest`/`playwright`) instead of the current 5
-  (`bdd`/`testrail`/`qtest`/`jira_xray`/`azure_devops`), and it still renders
-  `item.description`, which no longer exists on a `test_matrix` item — it's
-  `item.steps` now.
+Since the multi-entry refactor, `stepKeyFor` also handles two states that
+have no `snapshot.next`-derived equivalent: `session.workflow_aborted` (routes
+to a terminal "aborted" step — deliberately checked as an explicit field, not
+inferred from an empty `next`, for the same reason `_to_response` does it
+that way server-side) and `awaiting_input === "requirement_evaluation"`
+(routes to `EvaluationStep.jsx`, which posts to the new
+`POST /{session_id}/evaluation-decision` endpoint with `{action, max_clarification_rounds}`).
+`ChecklistEditor.jsx` was updated in lockstep with the backend's `steps`
+shape (per-scenario add/edit/remove step rows instead of one flat
+`description` textarea) and the 5-format dropdown.
+
+**Still Flow-A-only in the UI** — Flows B/C exist and are fully functional
+via the API (see `test_session_router.py`'s `qa_direct`/`format_only` tests),
+but nothing in `UploadStep.jsx` lets a user pick `workflow_mode`, set
+`out_of_scope_details`, or (Flow C) choose the target format upfront. A
+session started from the current UI is always `workflow_mode: "full"`.
 
 See README.md's Troubleshooting section for real environment issues hit
 during setup (macOS system-Python contamination causing a LangGraph
@@ -407,5 +411,5 @@ report is something novel in the code.
 - No automated frontend tests. Backend tests cover the graph's routing/loop
   logic and the health check, but not the FastAPI routes themselves
   (`routers/session.py`) or the file parsers.
-- Frontend is out of date against the current backend contract — see
-  "Frontend state machine" above for the specific gaps.
+- No UI for Flows B/C's entry parameters (`workflow_mode`, `out_of_scope_details`,
+  Flow C's upfront format picker) — see "Frontend state machine" above.

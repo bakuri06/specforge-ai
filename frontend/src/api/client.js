@@ -43,6 +43,18 @@ export async function getSession(sessionId) {
   return handleResponse(response)
 }
 
+export async function submitEvaluationDecision(sessionId, decision) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/sessions/${sessionId}/evaluation-decision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(decision),
+    },
+  )
+  return handleResponse(response)
+}
+
 export async function clarifyRequirements(sessionId, answers) {
   const response = await fetch(
     `${API_BASE_URL}/api/sessions/${sessionId}/clarify-requirements`,

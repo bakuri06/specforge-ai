@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import WizardStepper from './components/WizardStepper.jsx'
 import UploadStep from './components/UploadStep.jsx'
+import EvaluationStep from './components/EvaluationStep.jsx'
 import ClarificationStep from './components/ClarificationStep.jsx'
 import ChecklistEditor from './components/ChecklistEditor.jsx'
 import ExportStep from './components/ExportStep.jsx'
 import PolishedSpecPanel from './components/PolishedSpecPanel.jsx'
 import {
   startSession,
+  submitEvaluationDecision,
   clarifyRequirements,
   clarifyGaps,
   signOffChecklist,
@@ -15,7 +17,9 @@ import {
 
 function stepKeyFor(session) {
   if (!session) return 'upload'
+  if (session.workflow_aborted) return 'aborted'
   if (session.formatted_output) return 'export'
+  if (session.awaiting_input === 'requirement_evaluation') return 'evaluate'
   if (session.awaiting_input === 'ba_clarification') return 'refine'
   return 'matrix'
 }
@@ -39,6 +43,9 @@ export default function App() {
   }
 
   const handleStart = (payload) => runAction(() => startSession(payload))
+
+  const handleEvaluationDecision = (decision) =>
+    runAction(() => submitEvaluationDecision(session.session_id, decision))
 
   const handleClarifyRequirements = (answers) =>
     runAction(() => clarifyRequirements(session.session_id, answers))
@@ -75,6 +82,33 @@ export default function App() {
 
           {stepKey === 'upload' && (
             <UploadStep onSubmit={handleStart} submitting={busy} error={error} />
+          )}
+
+          {stepKey === 'evaluate' && session && (
+            <EvaluationStep
+              readinessScore={session.readiness_score}
+              evaluationFeedback={session.evaluation_feedback}
+              recommendedRounds={session.recommended_clarification_rounds}
+              onSubmit={handleEvaluationDecision}
+              submitting={busy}
+            />
+          )}
+
+          {stepKey === 'aborted' && (
+            <div className="space-y-4">
+              <h2 className="text-lg font-semibold text-slate-900">Session Aborted</h2>
+              <p className="text-sm text-slate-500">
+                You chose to stop here instead of proceeding. Edit your requirements
+                and start a new session when ready.
+              </p>
+              <button
+                type="button"
+                onClick={handleRestart}
+                className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
+              >
+                Start New Session
+              </button>
+            </div>
           )}
 
           {stepKey === 'refine' && session && (
