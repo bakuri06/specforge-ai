@@ -59,6 +59,15 @@ export async function submitEvaluationDecision(sessionId, decision) {
   return handleResponse(response)
 }
 
+export async function rewindSession(sessionId, target) {
+  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/rewind`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target }),
+  })
+  return handleResponse(response)
+}
+
 export async function clarifyRequirements(sessionId, answers) {
   const response = await fetch(
     `${API_BASE_URL}/api/sessions/${sessionId}/clarify-requirements`,

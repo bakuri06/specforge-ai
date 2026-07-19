@@ -13,8 +13,33 @@ import {
   clarifyRequirements,
   clarifyGaps,
   signOffChecklist,
+  rewindSession,
   downloadUrl,
 } from './api/client.js'
+
+// Everything needed to decide whether a step's "go back" is valid already
+// lives on the session response (ambiguity_round/gap_round stay meaningful
+// after that step resolves, since _to_response always derives them from
+// qa_history/gap_qa_history length regardless of awaiting_input) - no extra
+// client-side tracking needed except for Upload's raw draft, which the
+// backend never echoes back.
+function backTargetsFor(session) {
+  return {
+    upload: true,
+    evaluate: session?.readiness_score != null,
+    refine: (session?.ambiguity_round ?? 1) > 1,
+    matrix: (session?.test_matrix?.length ?? 0) > 0,
+  }
+}
+
+// Maps a wizard-step key to the LangGraph node the backend should rewind to.
+// "matrix" is only reachable as a go-back target while sitting on 'export'
+// (checklist_signoff already resolved by then), so it's unambiguous.
+const REWIND_TARGET_BY_STEP = {
+  evaluate: 'evaluation_review',
+  refine: 'ba_clarification',
+  matrix: 'checklist_signoff',
+}
 
 function stepKeyFor(session) {
   if (!session) return 'upload'
@@ -32,6 +57,9 @@ export default function App() {
   const [session, setSession] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  // Only kept so "go back to Upload" can pre-fill the form - the backend
+  // never echoes requirements_draft/out_of_scope_details/etc. back.
+  const [uploadDraft, setUploadDraft] = useState(null)
 
   const runAction = async (action) => {
     setBusy(true)
@@ -46,7 +74,21 @@ export default function App() {
     }
   }
 
-  const handleStart = (payload) => runAction(() => startSession(payload))
+  const handleStart = (payload) => {
+    setUploadDraft(payload)
+    runAction(() => startSession(payload))
+  }
+
+  const handleGoBack = (stepKey) => {
+    if (stepKey === 'upload') {
+      setSession(null)
+      setError(null)
+      return
+    }
+    const target = REWIND_TARGET_BY_STEP[stepKey]
+    if (!target) return
+    runAction(() => rewindSession(session.session_id, target))
+  }
 
   const handleEvaluationDecision = (decision) =>
     runAction(() => submitEvaluationDecision(session.session_id, decision))
@@ -66,6 +108,7 @@ export default function App() {
   }
 
   const stepKey = stepKeyFor(session)
+  const canGoBack = backTargetsFor(session)
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -80,12 +123,17 @@ export default function App() {
 
       <main className="mx-auto max-w-3xl px-6 py-10">
         <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
-          <WizardStepper activeKey={stepKey} />
+          <WizardStepper activeKey={stepKey} onStepClick={handleGoBack} canGoBack={canGoBack} />
 
           <PolishedSpecPanel polishedSpec={session?.polished_spec} />
 
           {stepKey === 'upload' && (
-            <UploadStep onSubmit={handleStart} submitting={busy} error={error} />
+            <UploadStep
+              onSubmit={handleStart}
+              submitting={busy}
+              error={error}
+              defaultValues={uploadDraft}
+            />
           )}
 
           {stepKey === 'evaluate' && session && (

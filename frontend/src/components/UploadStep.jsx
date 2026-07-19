@@ -27,11 +27,14 @@ const WORKFLOW_MODES = [
   },
 ]
 
-export default function UploadStep({ onSubmit, submitting, error }) {
-  const [workflowMode, setWorkflowMode] = useState('full')
-  const [text, setText] = useState('')
-  const [outOfScopeDetails, setOutOfScopeDetails] = useState('')
-  const [legacyTestCases, setLegacyTestCases] = useState('')
+export default function UploadStep({ onSubmit, submitting, error, defaultValues }) {
+  const [workflowMode, setWorkflowMode] = useState(defaultValues?.workflowMode || 'full')
+  const [text, setText] = useState(defaultValues?.text || '')
+  const [outOfScopeDetails, setOutOfScopeDetails] = useState(defaultValues?.outOfScopeDetails || '')
+  const [legacyTestCases, setLegacyTestCases] = useState(defaultValues?.legacyTestCases || '')
+  // File inputs can't be restored from a previous submission (File objects
+  // aren't meaningfully re-creatable), so these always start empty even when
+  // defaultValues is set - a disclosed limitation of going back to Upload.
   const [files, setFiles] = useState([])
   const [legacyFiles, setLegacyFiles] = useState([])
 

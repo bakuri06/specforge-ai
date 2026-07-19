@@ -62,3 +62,9 @@ class ChecklistSignoff(BaseModel):
 class EvaluationDecision(BaseModel):
     action: Literal["proceed", "abort"] = "proceed"
     max_clarification_rounds: Optional[int] = None
+
+
+class RewindRequest(BaseModel):
+    target: Literal[
+        "evaluation_review", "ba_clarification", "gap_clarification", "checklist_signoff"
+    ]

@@ -439,6 +439,71 @@ this is what populates the Upload step's three model dropdowns
 catches the failure and simply doesn't render the selector, falling back
 silently to the backend's configured defaults rather than blocking the form.
 
+### Rewinding to a previous step
+
+`POST /{session_id}/rewind` (body: `RewindRequest{target}`, `target` one of
+`evaluation_review`/`ba_clarification`/`gap_clarification`/`checklist_signoff`
+— the same four node names as `_AWAITING_BY_NEXT_NODE`'s keys) lets a session
+go back to an earlier pause point and discard everything computed after it,
+so the user can resubmit with different input — confirmed via clarifying
+questions to cover all four pause points with discard-and-rerun-downstream
+semantics, not just patch a field in place.
+
+This relies on LangGraph checkpoint history, not just replaying an endpoint —
+validated directly against this app's real compiled graph in
+`backend/scripts/repro_time_travel.py` before relying on it here (same
+"verify the tricky LangGraph mechanic experimentally first" discipline as the
+conditional-entry-point and interrupt/`get_config` investigations above).
+Two things aren't obvious from LangGraph's docs alone:
+
+- `graph.aget_state(config)` with an explicit `checkpoint_id` in `config`
+  always returns that one frozen historical snapshot — it never reflects
+  anything computed later. Only the bare `{"configurable": {"thread_id":
+  ...}}` config (no `checkpoint_id`) resolves to the thread's actual
+  current/latest state. Passing a pinned historical config to a *continuation*
+  call (`Command(resume=...)`) just re-runs from that same frozen point again
+  instead of advancing — this bit the first draft of the diagnostic script.
+- To rewind without touching any of the target checkpoint's own already-computed
+  values, fork with `graph.aupdate_state(target.config, None, as_node="__copy__")`.
+  This clones that checkpoint as the thread's new tip. The existing resume
+  endpoints (`/evaluation-decision`, `/clarify-requirements`, `/clarify-gaps`,
+  `/checklist-signoff`) need **zero changes** for this to work, since they
+  already call `Command(resume=...)` against the bare thread config
+  (`_config(session_id)`), which naturally picks up the rewound checkpoint as
+  "current" on the very next call.
+
+`rewind_session` (`session.py`) scans `graph.aget_state_history(config)`
+newest-first and forks the **first** (i.e. most recent) snapshot whose `next`
+matches `target` — for a multi-round clarification loop (`max_clarification_rounds`
+up to 5 via the evaluation-gate override) this means "redo my last answer,"
+not picking an arbitrary earlier round, so no `round` parameter is needed.
+`_to_response` needs no changes at all: it already derives `awaiting_input`
+purely from `snapshot.next`, which the rewind naturally restores. Rewinding
+`evaluation_review` after an abort also correctly clears `workflow_aborted`
+for free, since that field is only set by `evaluation_review_node`'s abort
+branch — a checkpoint from *before* that node resolves never has it set. A
+target never reached in this session's history (e.g. `ba_clarification` on a
+session that resolved with 0 clarification rounds) 404s.
+
+On the frontend, everything needed to decide whether a step's "go back" is
+valid already lives on the existing `SessionStateResponse` — no new
+client-side tracking, since `ambiguity_round`/`gap_round` stay meaningful
+after that step resolves (`_to_response` always derives them from
+`qa_history`/`gap_qa_history` length regardless of current `awaiting_input`).
+The one exception is Upload: the backend never echoes `requirements_draft`/
+`out_of_scope_details`/etc. back, so `App.jsx` keeps a client-side-only
+`uploadDraft` (the raw payload last passed to `startSession`) purely to
+pre-fill the form if the user goes back to it — going back to Upload doesn't
+call `/rewind` at all, it just clears `session` and lets the user submit a
+brand-new session, identical to how every session already starts. `File`
+objects in that draft (attachments/legacy files) intentionally aren't
+restored — not meaningfully re-creatable, and a disclosed limitation rather
+than a bug. `WizardStepper.jsx` makes a step's circle/label clickable only
+when it's strictly before the current step (`index < activeIndex`) **and**
+the derived `canGoBack[step.key]` is true; clicking calls
+`rewindSession`/resets `session`, and `stepKeyFor`'s existing render
+branches pick up the restored `awaiting_input` with no changes needed there.
+
 ### Frontend state machine
 
 `frontend/src/App.jsx` holds the entire session as one object returned verbatim

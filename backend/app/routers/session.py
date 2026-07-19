@@ -11,6 +11,7 @@ from app.models.schemas import (
     ChecklistSignoff,
     ClarificationAnswers,
     EvaluationDecision,
+    RewindRequest,
     SessionStateResponse,
 )
 from app.services.file_parser import extract_text_from_csv, extract_text_from_pdf
@@ -258,6 +259,42 @@ async def checklist_signoff(session_id: str, payload: ChecklistSignoff):
     await graph.ainvoke(Command(resume=resume_value), config=_config(session_id))
     response = await _to_response(session_id)
     logger.info("[%s] checklist_signoff: formatting complete", session_id)
+    return response
+
+
+@router.post("/{session_id}/rewind", response_model=SessionStateResponse)
+async def rewind_session(session_id: str, payload: RewindRequest):
+    """Go back to an earlier pause point and discard everything computed
+    after it, so the user can resubmit with different input. Scans state
+    history newest-first and forks from the FIRST (i.e. most recent) time
+    the graph paused at `target` - for a multi-round clarification loop this
+    means "redo my last answer", not an arbitrary earlier round, so no
+    `round` parameter is needed. The fork itself
+    (`aupdate_state(..., None, as_node="__copy__")`) doesn't touch any
+    values, it just clones that checkpoint as the thread's new tip; the
+    existing resume endpoints (already resuming against the bare thread
+    config, not a pinned checkpoint_id) then pick it up and continue
+    normally with no changes needed there. See
+    backend/scripts/repro_time_travel.py for how this was validated against
+    the real compiled graph before relying on it here."""
+    config = _config(session_id)
+    target_snapshot = None
+    async for snapshot in graph.aget_state_history(config):
+        if snapshot.next == (payload.target,):
+            target_snapshot = snapshot
+            break
+    if target_snapshot is None:
+        raise HTTPException(
+            404, f"No '{payload.target}' step found in this session's history."
+        )
+    await graph.aupdate_state(target_snapshot.config, None, as_node="__copy__")
+    response = await _to_response(session_id)
+    logger.info(
+        "[%s] rewind_session: target=%s, awaiting_input=%s",
+        session_id,
+        payload.target,
+        response.awaiting_input,
+    )
     return response
 
 

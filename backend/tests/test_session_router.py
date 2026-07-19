@@ -297,6 +297,145 @@ def test_refine_only_flow_reaches_polished_spec_through_the_real_router(monkeypa
     assert body["formatted_output"] is None
 
 
+def test_rewind_to_ba_clarification_lets_user_resubmit_a_different_answer(monkeypatch):
+    """Rewinding must actually discard downstream work and let a fresh answer
+    drive a genuinely different result - not just flip awaiting_input back
+    without rerunning anything."""
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "recommended_clarification_rounds" in prompt:
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 1,
+            }
+        if "Core Calculation Framework" in prompt:
+            if "Retries twice" in prompt:
+                return {"ambiguous": False, "questions": [], "polished_spec": "Spec: retries twice"}
+            if "Retries three times" in prompt:
+                return {
+                    "ambiguous": False,
+                    "questions": [],
+                    "polished_spec": "Spec: retries three times",
+                }
+            return {
+                "ambiguous": True,
+                "questions": ["What is the retry policy?"],
+                "polished_spec": "",
+            }
+        if "senior QA Engineer" in prompt:
+            return {
+                "gaps_found": False,
+                "questions": [],
+                "test_matrix": [
+                    {
+                        "id": "TC-1",
+                        "category": "sunny_day",
+                        "title": "Happy path",
+                        "steps": [
+                            {"step_number": 1, "action": "a", "expected_result": "r"}
+                        ],
+                        "status": "new",
+                        "included": True,
+                    }
+                ],
+            }
+        return "FORMATTED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    start = client.post("/api/sessions/", data={"text": "Some requirements"})
+    session_id = start.json()["session_id"]
+    client.post(f"/api/sessions/{session_id}/evaluation-decision", json={"action": "proceed"})
+
+    original = client.post(
+        f"/api/sessions/{session_id}/clarify-requirements",
+        json={"answers": ["Retries twice with backoff."]},
+    )
+    assert original.json()["awaiting_input"] == "checklist_signoff"
+    assert original.json()["polished_spec"] == "Spec: retries twice"
+
+    rewound = client.post(
+        f"/api/sessions/{session_id}/rewind", json={"target": "ba_clarification"}
+    )
+    assert rewound.status_code == 200
+    assert rewound.json()["awaiting_input"] == "ba_clarification"
+
+    resubmitted = client.post(
+        f"/api/sessions/{session_id}/clarify-requirements",
+        json={"answers": ["Retries three times with backoff."]},
+    )
+    assert resubmitted.json()["awaiting_input"] == "checklist_signoff"
+    assert resubmitted.json()["polished_spec"] == "Spec: retries three times"
+    assert len(resubmitted.json()["test_matrix"]) == 1
+
+
+def test_rewind_to_evaluation_review_after_abort_allows_proceeding_again(monkeypatch):
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "recommended_clarification_rounds" in prompt:
+            return {
+                "readiness_score": 90,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if "Core Calculation Framework" in prompt:
+            return {"ambiguous": False, "questions": [], "polished_spec": "Resolved spec"}
+        return "UNUSED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    start = client.post(
+        "/api/sessions/", data={"text": "Some reqs", "workflow_mode": "refine_only"}
+    )
+    session_id = start.json()["session_id"]
+
+    aborted = client.post(
+        f"/api/sessions/{session_id}/evaluation-decision", json={"action": "abort"}
+    )
+    assert aborted.json()["workflow_aborted"] is True
+    assert aborted.json()["awaiting_input"] is None
+
+    rewound = client.post(
+        f"/api/sessions/{session_id}/rewind", json={"target": "evaluation_review"}
+    )
+    assert rewound.status_code == 200
+    assert rewound.json()["workflow_aborted"] is False
+    assert rewound.json()["awaiting_input"] == "requirement_evaluation"
+
+    proceeded = client.post(
+        f"/api/sessions/{session_id}/evaluation-decision", json={"action": "proceed"}
+    )
+    assert proceeded.json()["workflow_aborted"] is False
+    assert proceeded.json()["polished_spec"] == "Resolved spec"
+
+
+def test_rewind_to_unreached_target_returns_404(monkeypatch):
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        if "recommended_clarification_rounds" in prompt:
+            return {
+                "readiness_score": 95,
+                "evaluation_feedback": [],
+                "recommended_clarification_rounds": 0,
+            }
+        if "Core Calculation Framework" in prompt:
+            return {"ambiguous": False, "questions": [], "polished_spec": "Resolved spec"}
+        return "UNUSED"
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    start = client.post(
+        "/api/sessions/", data={"text": "Clean reqs", "workflow_mode": "refine_only"}
+    )
+    session_id = start.json()["session_id"]
+    client.post(f"/api/sessions/{session_id}/evaluation-decision", json={"action": "proceed"})
+    # Resolved immediately with 0 rounds -> no ba_clarification checkpoint ever existed.
+
+    response = client.post(
+        f"/api/sessions/{session_id}/rewind", json={"target": "ba_clarification"}
+    )
+    assert response.status_code == 404
+
+
 def test_ollama_timeout_returns_helpful_504_not_bare_500(monkeypatch):
     class _TimeoutGraph(_FakeGraph):
         async def ainvoke(self, payload, config):
