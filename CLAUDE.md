@@ -90,15 +90,23 @@ Ollama through the thin wrapper in
 `backend/app/graph/llm.py` (`ollama_chat`, which POSTs to `/api/chat`, supports
 image attachments for the vision model, and for `expect_json=True` calls does
 best-effort repair plus one corrective retry before giving up. The repair in
-`_parse_json_with_repair` specifically targets two DeepSeek-R1 quirks hit live
-(worse on the smaller `deepseek-r1:7b` than `:14b`, and worse the longer/more
-structured the requested string value is): it strips any `<think>...</think>`
-reasoning block before brace-extracting (R1 emits these even under
-`format: json`, and stray braces inside the reasoning text would otherwise
-confuse naive brace-slicing), and parses with `json.loads(..., strict=False)`
-so a literal unescaped newline inside a string value (e.g. a multi-paragraph
-markdown spec) doesn't raise `Invalid control character` instead of just
-being treated as part of the string. See `test_llm_parsing.py` for the exact
+`_parse_json_with_repair` specifically targets three DeepSeek-R1 quirks hit
+live (worse on the smaller `deepseek-r1:7b` than `:14b`, and worse the
+longer/more structured the requested string value is): it strips any
+`<think>...</think>` reasoning block before brace-extracting (R1 emits these
+even under `format: json`, and stray braces inside the reasoning text would
+otherwise confuse naive brace-slicing); it parses with
+`json.loads(..., strict=False)` so a literal unescaped newline inside a
+string value (e.g. a multi-paragraph markdown spec) doesn't raise
+`Invalid control character` instead of just being treated as part of the
+string; and it falls back to `_fix_invalid_escapes` (escaping any backslash
+that isn't already a valid JSON escape char) for a literal backslash inside a
+string value — e.g. a regex-style pattern like `\d{6}` written without
+doubling it — which raises `Invalid \escape` regardless of `strict=False`
+(that flag only relaxes control characters, not malformed escape sequences).
+This one hit on *both* the original call and the corrective retry in a live
+run, confirming re-prompting alone isn't reliable for this class of error —
+the parser itself has to repair it. See `test_llm_parsing.py` for the exact
 repro of both.
 
 Getting valid JSON back isn't the same as getting the right *shape* back —

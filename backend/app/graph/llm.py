@@ -12,6 +12,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_INVALID_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrtu])')
 
 
 async def ollama_chat(
@@ -43,7 +44,9 @@ async def ollama_chat(
             "Respond again with ONLY the JSON object described above. No prose, "
             "no markdown code fences, no <think> reasoning blocks, no "
             "explanation. Escape every newline inside a string value as \\n "
-            "rather than a literal line break."
+            "rather than a literal line break, and escape every literal "
+            "backslash as \\\\ (e.g. a regex pattern like \\d must be "
+            "written as \\\\d)."
         )
         retry_content = await _raw_chat(model, corrected_prompt, images, expect_json)
         return _parse_json_with_repair(retry_content)
@@ -96,6 +99,17 @@ def _encode_image(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+def _fix_invalid_escapes(text: str) -> str:
+    """Escape any backslash that isn't already part of a valid JSON escape
+    sequence (\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, \\u). Local models
+    routinely emit a literal backslash that was never meant as a JSON escape
+    at all - e.g. a regex-style pattern in prose ("must match \\d{6}") or a
+    Windows path - without doubling it, which json.loads rejects outright as
+    "Invalid \\escape" regardless of strict=False (that flag only relaxes
+    control characters, not malformed escape sequences)."""
+    return _INVALID_ESCAPE_RE.sub(r"\\\\", text)
+
+
 def _parse_json_with_repair(content: str) -> dict:
     """Best-effort recovery for common local-model JSON quirks:
 
@@ -105,12 +119,23 @@ def _parse_json_with_repair(content: str) -> dict:
     - Literal, unescaped newlines/control characters inside string values
       (e.g. a multi-paragraph markdown spec) instead of an escaped \\n —
       json.loads(strict=False) allows these rather than rejecting them.
+    - A literal backslash inside a string value that isn't a valid JSON
+      escape (see _fix_invalid_escapes) - tried only as a last resort since
+      it rewrites content and could theoretically mangle an already-valid
+      escape sequence in a way that changes meaning.
     """
     content = _THINK_BLOCK_RE.sub("", content).strip()
-    try:
-        return json.loads(content, strict=False)
-    except json.JSONDecodeError:
-        start, end = content.find("{"), content.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return json.loads(content[start : end + 1], strict=False)
-        raise
+
+    start, end = content.find("{"), content.rfind("}")
+    candidates = [content]
+    if start != -1 and end != -1 and end > start:
+        candidates.append(content[start : end + 1])
+
+    last_error: Optional[json.JSONDecodeError] = None
+    for candidate in candidates:
+        for text in (candidate, _fix_invalid_escapes(candidate)):
+            try:
+                return json.loads(text, strict=False)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+    raise last_error

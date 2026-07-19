@@ -37,6 +37,24 @@ def test_both_quirks_combined():
     assert result["polished_spec"] == "## Overview\nLine two\nLine three"
 
 
+def test_repairs_invalid_backslash_escape_in_string_value():
+    """A live run hit 'Invalid \\escape' on both the original call AND the
+    corrective retry: the model wrote a literal regex-style backslash (e.g.
+    \\d for a 6-digit OTP pattern) inside a string value instead of escaping
+    it as \\\\d. json.loads(strict=False) doesn't fix this - that flag only
+    relaxes raw control characters, not malformed escape sequences - so
+    retrying the model alone isn't reliable and the parser itself must repair it."""
+    content = r'{"polished_spec": "OTP must match \d{6}"}'
+    result = _parse_json_with_repair(content)
+    assert result["polished_spec"] == "OTP must match \\d{6}"
+
+
+def test_valid_escapes_are_left_untouched_while_invalid_ones_are_fixed():
+    content = r'{"a": "line one\nline two, pattern \d{6}, quote \" done"}'
+    result = _parse_json_with_repair(content)
+    assert result["a"] == "line one\nline two, pattern \\d{6}, quote \" done"
+
+
 def test_raises_when_content_has_no_json_at_all():
     with pytest.raises(json.JSONDecodeError):
         _parse_json_with_repair("just some prose, no braces here")
