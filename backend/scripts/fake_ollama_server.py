@@ -14,7 +14,12 @@ def _reply_for(prompt: str) -> str:
         return json.dumps(
             {
                 "readiness_score": 62,
-                "evaluation_feedback": ["SMS delivery failure path is undefined"],
+                "evaluation_feedback": {
+                    "data_and_boundaries": ["OTP field has no documented length limit"],
+                    "integration_and_async_behavior": [],
+                    "network_and_resiliency": ["SMS delivery failure path is undefined"],
+                    "state_and_lifecycle": [],
+                },
                 "recommended_clarification_rounds": 1,
             }
         )

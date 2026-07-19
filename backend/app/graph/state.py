@@ -6,6 +6,13 @@ class QAHistoryEntry(TypedDict):
     answers: list[str]
 
 
+class QualityGateFeedback(TypedDict):
+    data_and_boundaries: list[str]
+    integration_and_async_behavior: list[str]
+    network_and_resiliency: list[str]
+    state_and_lifecycle: list[str]
+
+
 class TestStepDict(TypedDict):
     step_number: int
     action: str
@@ -48,7 +55,7 @@ class SpecForgeState(TypedDict, total=False):
     # and the BA clarification loop)
     out_of_scope_details: str
     readiness_score: int
-    evaluation_feedback: list[str]
+    evaluation_feedback: QualityGateFeedback
     recommended_clarification_rounds: int
     max_clarification_rounds: int
     current_clarification_round: int

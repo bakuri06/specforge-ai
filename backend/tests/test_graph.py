@@ -63,7 +63,7 @@ async def test_ambiguity_and_gap_clarification_loops(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 40,
-                "evaluation_feedback": ["Timeout behavior undefined"],
+                "evaluation_feedback": {"network_and_resiliency": ["Timeout behavior undefined"]},
                 "recommended_clarification_rounds": 1,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -177,7 +177,7 @@ async def test_straight_through_when_spec_and_matrix_are_clean(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 95,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -239,7 +239,7 @@ async def test_requirement_evaluation_abort_stops_pipeline(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 20,
-                "evaluation_feedback": ["Way too vague"],
+                "evaluation_feedback": {"data_and_boundaries": ["Way too vague"]},
                 "recommended_clarification_rounds": 3,
             }
         raise AssertionError("no further model calls expected after abort")
@@ -271,7 +271,7 @@ async def test_max_clarification_rounds_zero_skips_ba_loop_entirely(monkeypatch)
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 50,
-                "evaluation_feedback": ["Some gaps"],
+                "evaluation_feedback": {"data_and_boundaries": ["Some gaps"]},
                 "recommended_clarification_rounds": 2,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -312,7 +312,7 @@ async def test_ba_refiner_forces_resolution_after_max_rounds(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 50,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 1,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -362,7 +362,7 @@ async def test_qa_matrix_builder_forces_resolution_after_max_rounds(monkeypatch)
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -407,7 +407,7 @@ async def test_per_session_model_override_is_used_over_settings_default(monkeypa
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -448,7 +448,7 @@ async def test_polished_spec_returned_as_dict_is_coerced_to_string(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -483,7 +483,7 @@ async def test_category_placeholder_string_is_coerced_to_valid_enum_value(monkey
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -528,7 +528,7 @@ async def test_legacy_test_cases_are_forwarded_into_qa_prompt(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -635,6 +635,43 @@ async def test_flow_c_format_only_reaches_formatter_directly(monkeypatch):
     assert "TC-1: Old login test case" in seen_prompts[0]
 
 
+async def test_flow_c_bdd_output_with_multiple_features_gets_merged_into_one(monkeypatch):
+    """formatter_node's post-generation guardrail must collapse a model's
+    multi-Feature bdd output into exactly one Feature:, even though this runs
+    through the real graph (not just a direct unit test of the merge
+    helper) - end-to-end proof the wiring in formatter_node actually fires."""
+
+    async def fake_ollama_chat(model, prompt, images=None, expect_json=False):
+        return (
+            "Feature: Login\n\n"
+            "  Scenario: Happy path\n"
+            "    Given a valid login\n\n"
+            "Feature: Login - Failures\n\n"
+            "  Scenario: Bad password\n"
+            "    Given an invalid password\n"
+        )
+
+    monkeypatch.setattr(nodes_module, "ollama_chat", fake_ollama_chat)
+
+    session_id = "test-flow-c-bdd-merge"
+    config = _config(session_id)
+    initial_state = _initial_state(
+        session_id,
+        "",
+        workflow_mode="format_only",
+        legacy_test_cases="TC-1: Old login test case",
+        output_format="bdd",
+    )
+
+    await graph.ainvoke(initial_state, config=config)
+    snapshot = await graph.aget_state(config)
+
+    output = snapshot.values["formatted_output"]
+    assert output.count("Feature:") == 1
+    assert "Scenario: Happy path" in output
+    assert "Scenario: Bad password" in output
+
+
 async def test_refine_only_stops_after_ba_refiner_resolves(monkeypatch):
     """refine_only shares the full path through requirement_evaluator and
     ba_refiner (including the clarification loop), then must stop at the
@@ -645,7 +682,7 @@ async def test_refine_only_stops_after_ba_refiner_resolves(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 80,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if _is_ba_refiner_prompt(prompt):
@@ -688,7 +725,7 @@ async def test_refine_only_still_runs_the_ba_clarification_loop(monkeypatch):
         if _is_evaluator_prompt(prompt):
             return {
                 "readiness_score": 40,
-                "evaluation_feedback": ["Too vague"],
+                "evaluation_feedback": {"data_and_boundaries": ["Too vague"]},
                 "recommended_clarification_rounds": 1,
             }
         if _is_ba_refiner_prompt(prompt):

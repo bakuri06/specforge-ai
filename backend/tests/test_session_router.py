@@ -205,7 +205,7 @@ def test_malformed_model_output_does_not_crash_response_construction(monkeypatch
         if "recommended_clarification_rounds" in prompt:
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if "senior Business Analyst" in prompt:
@@ -266,7 +266,7 @@ def test_refine_only_flow_reaches_polished_spec_through_the_real_router(monkeypa
         if "recommended_clarification_rounds" in prompt:
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if "senior Business Analyst" in prompt:
@@ -306,7 +306,7 @@ def test_rewind_to_ba_clarification_lets_user_resubmit_a_different_answer(monkey
         if "recommended_clarification_rounds" in prompt:
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 1,
             }
         if "Core Calculation Framework" in prompt:
@@ -375,7 +375,7 @@ def test_rewind_to_evaluation_review_after_abort_allows_proceeding_again(monkeyp
         if "recommended_clarification_rounds" in prompt:
             return {
                 "readiness_score": 90,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if "Core Calculation Framework" in prompt:
@@ -414,7 +414,7 @@ def test_rewind_to_unreached_target_returns_404(monkeypatch):
         if "recommended_clarification_rounds" in prompt:
             return {
                 "readiness_score": 95,
-                "evaluation_feedback": [],
+                "evaluation_feedback": {},
                 "recommended_clarification_rounds": 0,
             }
         if "Core Calculation Framework" in prompt:

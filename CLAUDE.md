@@ -345,6 +345,26 @@ entirely) and correctly fall back to the module constant. The QA matrix
 builder's gap-loop cap is untouched by any of this — it's out of scope for the
 evaluator, which is specifically "immediately after ingestion in System 1."
 
+`evaluation_feedback` is a categorized dict, not a flat list of strings:
+`state.py`'s `QualityGateFeedback`/`schemas.py`'s mirrored Pydantic model both
+fix the same four keys — `data_and_boundaries` (input validation/regex/field
+limits), `integration_and_async_behavior` (background jobs, push protocols,
+messaging hooks, payload schemas), `network_and_resiliency` (timeouts,
+backoff/retries, network fault states), `state_and_lifecycle` (status
+mutations, retention, expiration) — each a `list[str]` of gaps found in that
+specific gate. `readiness_score` stays one holistic 0-100 LLM judgment across
+all four, not a per-category sub-score averaged deterministically; there was
+no way to compute a *reliable* aggregate from four independent per-category
+numbers that wouldn't just reintroduce the same "trust the model's own
+number" problem this evaluator already has. `_coerce_quality_gate_feedback`
+(`nodes.py`) replaces the old `_coerce_feedback_list`: if a smaller model
+ignores the categorized shape and returns the old flat list (or a bare
+string) instead, there's no reliable way to guess which category its items
+belong to, so the safe fallback is all-four-categories-empty — same
+never-crash-on-wrong-shape precedent as `_coerce_test_matrix`'s non-list
+fallback. `EvaluationStep.jsx` renders one labeled group per category instead
+of a single flat bullet list.
+
 ### "refine_only": stopping after the polished spec
 
 `route_ambiguity` (`nodes.py`) is the only place `refine_only` diverges from
@@ -381,6 +401,36 @@ exactly this reason. Any future `workflow_mode` value must be added in all
 three places (`state.py`, `session.py`'s `VALID_WORKFLOW_MODES`, and
 `schemas.py`'s `SessionStateResponse.workflow_mode`) — there's no single
 source of truth for this Literal today.
+
+### Prompts module (`app/graph/prompts.py`)
+
+Every prompt constant (`VISION_PROMPT`, `REQUIREMENT_EVALUATOR_SYSTEM`,
+`BA_REFINER_SYSTEM`/`BA_REFINER_FORCE_RESOLVE_SYSTEM`,
+`QA_MATRIX_SYSTEM`/`QA_MATRIX_FORCE_RESOLVE_SYSTEM`,
+`FORMATTER_FORMAT_RULES`/`FORMAT_SAMPLE_FILES`/`COMPILE_INSTRUCTION`/
+`TRANSLATE_INSTRUCTION`) lives here now, not inline in `nodes.py` — `nodes.py`
+imports them and stays focused on graph/node logic. The
+`few_shot_block(...)` splicing that happens at module-import time (see
+"Few-shot samples" below) moved with them; `prompts.py` importing from
+`app.services.samples` has no circular-import risk since `samples.py` never
+imports from `app.graph`. This was a pure move — no prompt constant's *name*
+changed, and every marker phrase existing tests key on to disambiguate mocked
+`ollama_chat` calls (`"Core Calculation Framework"` for the BA refiner,
+`"senior QA Engineer"` for the QA matrix builder, `"recommended_clarification_rounds"`
+for the evaluator) is still present verbatim, so no test needed to change
+because of the move itself — only where a prompt's *text* was deliberately
+rewritten (see below) did anything else need touching.
+
+`QA_MATRIX_SYSTEM`/`QA_MATRIX_FORCE_RESOLVE_SYSTEM` both got a "CONTEXT
+LOCKING" instruction block (`QA_MATRIX_CONTEXT_LOCKING`, shared between the
+two so a future edit can't update one and silently forget the other — the
+same mistake this codebase already hit once with `BA_REFINER_SPEC_SECTIONS`)
+forbidding generic template scenarios (login, money-transfer) unless the
+polished blueprint actually describes that functionality, instructing the
+model to trace the blueprint's actual named components instead. This is
+prompt-only, not paired with a deterministic check — unlike the BDD guardrail
+below, "did the model actually anchor to the input" isn't something a regex
+can verify.
 
 ### Hierarchical test steps
 
@@ -436,20 +486,36 @@ depending on `workflow_mode == "format_only"`, so the rules text isn't
 duplicated between "compile this structured test_matrix" (Flows A/B) and
 "translate/reformat this existing document, don't invent new cases" (Flow C).
 
-Only the two formats with a hard machine-parseable contract get post-generation
-validation: `jira_xray` is re-parsed with the same `<think>`-stripping /
-`strict=False` tolerance as other structured LLM calls
-(`app.graph.llm._parse_json_with_repair`, reused directly) and re-serialized
-via `json.dumps` for a canonical string; `qtest`/`azure_devops` are checked
-with `csv.reader` for a consistent column count across every row. Both get one
-corrective retry on failure (`_validate_and_repair_json`/`_validate_and_repair_csv`),
-mirroring `ollama_chat`'s own JSON retry pattern. `bdd`/`testrail` get no extra
-validation — same precedent as the original 3-format router, lower structural
-risk since there's no hard parse contract to violate. `output_format`'s
-5-value Literal is duplicated across `state.py`, `schemas.py` (x2),
-`nodes.py`'s rules/sample-file dicts, and `session.py`'s download extension
-map — pre-existing duplication (was 3 formats across the same set of places),
-not something this change introduced or fixed.
+The two formats with a hard machine-parseable contract get post-generation
+validation via a corrective LLM re-prompt: `jira_xray` is re-parsed with the
+same `<think>`-stripping / `strict=False` tolerance as other structured LLM
+calls (`app.graph.llm._parse_json_with_repair`, reused directly) and
+re-serialized via `json.dumps` for a canonical string; `qtest`/`azure_devops`
+are checked with `csv.reader` for a consistent column count across every row.
+Both get one corrective retry on failure
+(`_validate_and_repair_json`/`_validate_and_repair_csv`), mirroring
+`ollama_chat`'s own JSON retry pattern.
+
+`bdd` gets a different kind of post-generation guardrail: `_merge_multiple_bdd_features`
+(`nodes.py`) deterministically collapses N `Feature:` lines into 1 by deleting
+every `Feature:` line after the first, letting their `Scenario`/`Scenario Outline`
+blocks fall through unchanged so they end up nested under the single
+remaining Feature. A local model asked to compile several test cases at once
+sometimes emits a separate `Feature:` per case instead of nesting them all
+under one — invalid Gherkin (a `.feature` file has exactly one root Feature).
+Unlike the JSON/CSV cases, this doesn't retry via the LLM at all: a
+multi-Feature merge is always mechanically fixable by deleting lines, so
+there's no reason to gamble on a re-prompt the way JSON/CSV validity
+sometimes has to. `FORMATTER_FORMAT_RULES["bdd"]`'s prompt text was also
+updated to explicitly demand exactly one `Feature:` declaration — the
+deterministic merge is the backstop for when that instruction alone doesn't
+hold, not a replacement for it. `testrail` still gets no extra validation —
+lower structural risk since there's no hard parse contract to violate.
+
+`output_format`'s 5-value Literal is duplicated across `state.py`,
+`schemas.py` (x2), `prompts.py`'s rules/sample-file dicts, and `session.py`'s
+download extension map — pre-existing duplication (was 3 formats across the
+same set of places), not something this change introduced or fixed.
 
 ### Few-shot samples (`backend/app/samples/`, `backend/app/services/samples.py`)
 

@@ -1,5 +1,12 @@
 import { useState } from 'react'
 
+const QUALITY_GATE_LABELS = {
+  data_and_boundaries: 'Data & Boundaries',
+  integration_and_async_behavior: 'Integration & Async Behavior',
+  network_and_resiliency: 'Network & Resiliency',
+  state_and_lifecycle: 'State & Lifecycle',
+}
+
 export default function EvaluationStep({
   readinessScore,
   evaluationFeedback,
@@ -32,15 +39,27 @@ export default function EvaluationStep({
           <span className="text-3xl font-bold text-slate-900">{readinessScore ?? '—'}</span>
           <span className="text-sm text-slate-500">/ 100 readiness score</span>
         </div>
-        {evaluationFeedback && evaluationFeedback.length > 0 ? (
-          <ul className="mt-3 space-y-1 text-sm text-slate-600 list-disc list-inside">
-            {evaluationFeedback.map((item, index) => (
-              <li key={index}>{item}</li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-3 text-sm text-slate-500">No critical gaps found.</p>
-        )}
+        <div className="mt-4 space-y-3">
+          {Object.entries(QUALITY_GATE_LABELS).map(([key, label]) => {
+            const gaps = evaluationFeedback?.[key] || []
+            return (
+              <div key={key}>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {label}
+                </h4>
+                {gaps.length > 0 ? (
+                  <ul className="mt-1 space-y-1 text-sm text-slate-600 list-disc list-inside">
+                    {gaps.map((item, index) => (
+                      <li key={index}>{item}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-1 text-sm text-slate-500">No gaps found.</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       <form onSubmit={handleProceed} className="space-y-4">

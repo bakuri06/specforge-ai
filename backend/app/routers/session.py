@@ -52,7 +52,7 @@ async def _to_response(session_id: str) -> SessionStateResponse:
         workflow_aborted=bool(values.get("workflow_aborted", False)),
         out_of_scope_details=values.get("out_of_scope_details"),
         readiness_score=values.get("readiness_score"),
-        evaluation_feedback=values.get("evaluation_feedback", []),
+        evaluation_feedback=values.get("evaluation_feedback", {}),
         recommended_clarification_rounds=values.get("recommended_clarification_rounds"),
         ambiguity_questions=values.get("ambiguity_questions", [])
         if awaiting == "ba_clarification"

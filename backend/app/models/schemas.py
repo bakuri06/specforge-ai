@@ -1,8 +1,15 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 OutputFormat = Literal["bdd", "testrail", "qtest", "jira_xray", "azure_devops"]
+
+
+class QualityGateFeedback(BaseModel):
+    data_and_boundaries: list[str] = Field(default_factory=list)
+    integration_and_async_behavior: list[str] = Field(default_factory=list)
+    network_and_resiliency: list[str] = Field(default_factory=list)
+    state_and_lifecycle: list[str] = Field(default_factory=list)
 
 
 class TestStep(BaseModel):
@@ -35,7 +42,7 @@ class SessionStateResponse(BaseModel):
     workflow_aborted: bool = False
     out_of_scope_details: Optional[str] = None
     readiness_score: Optional[int] = None
-    evaluation_feedback: list[str] = []
+    evaluation_feedback: QualityGateFeedback = Field(default_factory=QualityGateFeedback)
     recommended_clarification_rounds: Optional[int] = None
     ambiguity_questions: list[str] = []
     ambiguity_round: int = 1
